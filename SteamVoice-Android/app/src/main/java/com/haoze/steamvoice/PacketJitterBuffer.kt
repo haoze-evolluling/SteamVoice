@@ -13,6 +13,11 @@ class PacketJitterBuffer(private val targetPackets: Int = 4) {
     fun take(): ByteArray? {
         if (nextSequence < 0 || packets.size < targetPackets) return null
         val pcm = packets.remove(nextSequence)
+        if (pcm == null) {
+            // A lost UDP packet must not stall playback forever.
+            nextSequence = packets.firstKey()
+            return packets.remove(nextSequence++)
+        }
         nextSequence++
         return pcm
     }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -68,7 +69,7 @@ func (a *App) Connect(device Device) error {
 		sender := a.sender
 		a.mu.Unlock()
 		if sender != nil {
-			_ = sender.SendPCM(pcm)
+			if err := sender.SendPCM(pcm); err != nil { log.Printf("audio UDP send failed: %v", err) }
 		}
 	})
 	if err != nil {
