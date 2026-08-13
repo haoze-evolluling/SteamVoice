@@ -9,5 +9,3 @@ export function Disconnect():Promise<void>;
 export function DiscoverDevices():Promise<Array<main.Device>>;
 
 export function GetStatus():Promise<main.Status>;
-
-export function SetMuted(arg1:boolean):Promise<void>;

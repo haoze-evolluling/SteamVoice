@@ -21,7 +21,6 @@ type Header struct {
 	Codec             uint8
 	SampleRate        uint32
 	Channels          uint8
-	Muted             bool
 	Bitrate           uint32
 	Session           uint32
 	Sequence          uint32
@@ -51,9 +50,6 @@ func Encode(h Header, opus []byte) ([]byte, error) {
 	b[5] = h.Codec
 	binary.BigEndian.PutUint32(b[6:], h.SampleRate)
 	b[10] = h.Channels
-	if h.Muted {
-		b[11] = 1
-	}
 	binary.BigEndian.PutUint32(b[12:], h.Bitrate)
 	binary.BigEndian.PutUint32(b[16:], h.Session)
 	binary.BigEndian.PutUint32(b[20:], h.Sequence)
@@ -67,7 +63,7 @@ func Decode(b []byte) (Header, []byte, error) {
 	if len(b) < HeaderSize || string(b[:4]) != Magic || b[4] != Version || (b[5] != CodecOpus && b[5] != CodecPCM) {
 		return Header{}, nil, errors.New("invalid SteamVoice v2 packet")
 	}
-	h := Header{Codec: b[5], SampleRate: binary.BigEndian.Uint32(b[6:]), Channels: b[10], Muted: b[11] != 0, Bitrate: binary.BigEndian.Uint32(b[12:]), Session: binary.BigEndian.Uint32(b[16:]), Sequence: binary.BigEndian.Uint32(b[20:]), PayloadLength: binary.BigEndian.Uint16(b[24:]), FrameMilliseconds: binary.BigEndian.Uint16(b[26:])}
+	h := Header{Codec: b[5], SampleRate: binary.BigEndian.Uint32(b[6:]), Channels: b[10], Bitrate: binary.BigEndian.Uint32(b[12:]), Session: binary.BigEndian.Uint32(b[16:]), Sequence: binary.BigEndian.Uint32(b[20:]), PayloadLength: binary.BigEndian.Uint16(b[24:]), FrameMilliseconds: binary.BigEndian.Uint16(b[26:])}
 	if h.SampleRate != SampleRate || h.Channels != Channels || h.FrameMilliseconds == 0 {
 		return Header{}, nil, errors.New("unsupported audio format")
 	}

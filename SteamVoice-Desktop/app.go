@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os/exec"
 	"strings"
 	"sync"
 
@@ -28,25 +27,6 @@ type Status struct {
 	Connected bool
 	Device    *Device
 	Message   string
-	Muted     bool
-}
-
-func (a *App) SetMuted(muted bool) error {
-	// Windows exposes the master mute toggle through the standard shell hotkey.
-	// The capture loop remains active, so the remote receiver keeps receiving audio.
-	_ = exec.Command("powershell.exe", "-NoProfile", "-Command", "$w=New-Object -ComObject WScript.Shell; $w.SendKeys([char]173)").Run()
-	a.mu.Lock()
-	sender := a.sender
-	a.status.Muted = muted
-	status, ctx := a.status, a.ctx
-	a.mu.Unlock()
-	if sender != nil {
-		sender.SetMuted(muted)
-	}
-	if ctx != nil {
-		runtime.EventsEmit(ctx, "stream:status", status)
-	}
-	return nil
 }
 
 type App struct {
