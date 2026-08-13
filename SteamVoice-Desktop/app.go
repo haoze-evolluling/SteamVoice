@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -16,6 +17,11 @@ type Device struct {
 	Name, Host string
 	Port       int
 	ID         string
+	Codec      string
+	SampleRate int
+	Channels   int
+	Bitrate    int
+	FrameMs    int
 }
 type Status struct {
 	Connected bool
@@ -40,7 +46,7 @@ func (a *App) DiscoverDevices() ([]Device, error) {
 		a.discoverer.Close()
 	}
 	b, err := discovery.NewBrowser(func(d discovery.Device) {
-		runtime.EventsEmit(a.ctx, "device:found", Device{d.Name, d.Host, d.Port, d.ID})
+		runtime.EventsEmit(a.ctx, "device:found", Device{Name: d.Name, Host: d.Host, Port: d.Port, ID: d.ID, Codec: d.Codec, SampleRate: d.SampleRate, Channels: d.Channels, Bitrate: d.Bitrate, FrameMs: d.FrameMs})
 	})
 	if err != nil {
 		return nil, err
@@ -59,7 +65,14 @@ func (a *App) Connect(device Device) error {
 	if previousSender != nil {
 		_ = previousSender.Close()
 	}
-	s, err := stream.NewSender(fmt.Sprintf("%s:%d", device.Host, device.Port))
+	bitrate := device.Bitrate
+	if bitrate == 0 {
+		bitrate = 128000
+	}
+	if device.Codec != "" && !strings.EqualFold(device.Codec, "opus") {
+		return fmt.Errorf("receiver does not support Opus (codec=%s)", device.Codec)
+	}
+	s, err := stream.NewSender(fmt.Sprintf("%s:%d", device.Host, device.Port), bitrate)
 	if err != nil {
 		return err
 	}
@@ -69,7 +82,9 @@ func (a *App) Connect(device Device) error {
 		sender := a.sender
 		a.mu.Unlock()
 		if sender != nil {
-			if err := sender.SendPCM(pcm); err != nil { log.Printf("audio UDP send failed: %v", err) }
+			if err := sender.SendPCM(pcm); err != nil {
+				log.Printf("audio UDP send failed: %v", err)
+			}
 		}
 	})
 	if err != nil {

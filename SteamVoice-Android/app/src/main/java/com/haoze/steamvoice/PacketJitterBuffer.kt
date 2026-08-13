@@ -3,23 +3,23 @@ package com.haoze.steamvoice
 import java.util.TreeMap
 
 class PacketJitterBuffer(private val targetPackets: Int = 4) {
-    private val packets = TreeMap<Long, ByteArray>()
+    private val packets = TreeMap<Long, SteamVoicePacket>()
     private var session = -1L
     private var nextSequence = -1L
     fun offer(packet: SteamVoicePacket) {
         if (packet.session != session) { packets.clear(); session = packet.session; nextSequence = packet.sequence }
-        if (packet.sequence >= nextSequence) packets.putIfAbsent(packet.sequence, packet.pcm)
+        if (packet.sequence >= nextSequence) packets.putIfAbsent(packet.sequence, packet)
     }
-    fun take(): ByteArray? {
+    fun take(): SteamVoicePacket? {
         if (nextSequence < 0 || packets.size < targetPackets) return null
-        val pcm = packets.remove(nextSequence)
-        if (pcm == null) {
+        val packet = packets.remove(nextSequence)
+        if (packet == null) {
             // A lost UDP packet must not stall playback forever.
             nextSequence = packets.firstKey()
             return packets.remove(nextSequence++)
         }
         nextSequence++
-        return pcm
+        return packet
     }
     fun clear() { packets.clear(); nextSequence = -1L; session = -1L }
 }

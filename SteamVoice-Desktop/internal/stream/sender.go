@@ -1,6 +1,50 @@
 package stream
-import ( "crypto/rand"; "encoding/binary"; "net"; "sync"; "steamvoice-desktop/internal/protocol" )
-type Sender struct { conn *net.UDPConn; session, seq uint32; mu sync.Mutex }
-func NewSender(address string) (*Sender,error) { a,e:=net.ResolveUDPAddr("udp",address); if e!=nil{return nil,e}; c,e:=net.DialUDP("udp",nil,a); if e!=nil{return nil,e}; var raw [4]byte; _,_=rand.Read(raw[:]); return &Sender{conn:c,session:binary.BigEndian.Uint32(raw[:])},nil }
-func (s *Sender) SendPCM(pcm []byte) error { s.mu.Lock(); defer s.mu.Unlock(); b,e:=protocol.Encode(protocol.Header{Session:s.session,Sequence:s.seq},pcm); if e==nil { _,e=s.conn.Write(b); s.seq++ }; return e }
-func (s *Sender) Close() error { return s.conn.Close() }
+
+import (
+	"crypto/rand"
+	"encoding/binary"
+	"net"
+	"steamvoice-desktop/internal/protocol"
+	"sync"
+)
+
+type Sender struct {
+	conn         *net.UDPConn
+	session, seq uint32
+	bitrate      uint32
+	mu           sync.Mutex
+}
+
+func NewSender(address string, bitrate ...int) (*Sender, error) {
+	a, e := net.ResolveUDPAddr("udp", address)
+	if e != nil {
+		return nil, e
+	}
+	c, e := net.DialUDP("udp", nil, a)
+	if e != nil {
+		return nil, e
+	}
+	var raw [4]byte
+	_, _ = rand.Read(raw[:])
+	br := 128000
+	if len(bitrate) > 0 && bitrate[0] > 0 {
+		br = bitrate[0]
+	}
+	return &Sender{conn: c, session: binary.BigEndian.Uint32(raw[:]), bitrate: uint32(br)}, nil
+}
+
+// SendOpus sends one already encoded 20 ms Opus frame.
+func (s *Sender) SendOpus(opus []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, e := protocol.Encode(protocol.Header{Codec: protocol.CodecOpus, Bitrate: s.bitrate, Session: s.session, Sequence: s.seq}, opus)
+	if e == nil {
+		_, e = s.conn.Write(b)
+		s.seq++
+	}
+	return e
+}
+
+// SendPCM is retained as an API boundary; callers must provide Opus payloads in v2.
+func (s *Sender) SendPCM(opus []byte) error { return s.SendOpus(opus) }
+func (s *Sender) Close() error              { return s.conn.Close() }

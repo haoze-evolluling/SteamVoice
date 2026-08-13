@@ -3,6 +3,7 @@
 package capture
 
 import (
+	"log"
 	"sync"
 
 	"github.com/gen2brain/malgo"
@@ -18,7 +19,8 @@ func Start(onPCM func([]byte)) (*Loopback, error) {
 	config.Capture.Channels = 2
 	config.SampleRate = 48000
 	config.PerformanceProfile = malgo.LowLatency
-	device, err := malgo.InitDevice(ctx.Context, config, malgo.DeviceCallbacks{Data: func(_, input []byte, _ uint32) { if len(input)>0 { frame:=append([]byte(nil), input...); onPCM(frame) } }})
+	var frames uint64
+	device, err := malgo.InitDevice(ctx.Context, config, malgo.DeviceCallbacks{Data: func(_, input []byte, _ uint32) { if len(input)>0 { frames++; if frames == 1 { log.Printf("WASAPI loopback started, first PCM frame=%d bytes", len(input)) }; frame:=append([]byte(nil), input...); onPCM(frame) } }})
 	if err != nil { _ = ctx.Uninit(); ctx.Free(); return nil, err }
 	if err = device.Start(); err != nil { device.Uninit(); _=ctx.Uninit(); ctx.Free(); return nil, err }
 	return &Loopback{ctx:ctx,device:device}, nil

@@ -5,6 +5,11 @@ export namespace main {
 	    Host: string;
 	    Port: number;
 	    ID: string;
+	    Codec: string;
+	    SampleRate: number;
+	    Channels: number;
+	    Bitrate: number;
+	    FrameMs: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Device(source);
@@ -16,6 +21,11 @@ export namespace main {
 	        this.Host = source["Host"];
 	        this.Port = source["Port"];
 	        this.ID = source["ID"];
+	        this.Codec = source["Codec"];
+	        this.SampleRate = source["SampleRate"];
+	        this.Channels = source["Channels"];
+	        this.Bitrate = source["Bitrate"];
+	        this.FrameMs = source["FrameMs"];
 	    }
 	}
 	export class Status {
