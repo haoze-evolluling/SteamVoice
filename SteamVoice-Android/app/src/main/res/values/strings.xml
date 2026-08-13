@@ -1,5 +1,5 @@
 <resources>
     <string name="app_name">SteamVoice</string>
-    <string name="receiver_channel">SteamVoice receiver</string>
-    <string name="receiver_notification">Listening for audio from your PC</string>
+    <string name="receiver_channel">SteamVoice 接收服务</string>
+    <string name="receiver_notification">正在接收电脑音频</string>
 </resources>

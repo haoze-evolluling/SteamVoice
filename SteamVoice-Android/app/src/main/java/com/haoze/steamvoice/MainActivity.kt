@@ -36,7 +36,16 @@ class MainActivity : ComponentActivity() {
         setContent { SteamVoiceTheme { ReceiverScreen(running, ::toggleReceiver) } }
     }
 
-    private fun toggleReceiver() { if (running) stopService(Intent(this, AudioReceiverService::class.java)) else if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) else startReceiver() }
+    private fun toggleReceiver() {
+        if (running) {
+            stopService(Intent(this, AudioReceiverService::class.java))
+            running = false
+        } else if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            startReceiver()
+        }
+    }
     private fun startReceiver() { ContextCompat.startForegroundService(this, Intent(this, AudioReceiverService::class.java)); running = true }
 }
 
@@ -45,8 +54,8 @@ private fun ReceiverScreen(running: Boolean, onToggle: () -> Unit) {
     Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(28.dp), Arrangement.Center, Alignment.CenterHorizontally) {
             Text("SteamVoice", style = MaterialTheme.typography.headlineLarge)
-            Text(if (running) "Ready for your Windows PC on this Wi-Fi network" else "Start the receiver to make this device discoverable", modifier = Modifier.padding(top = 12.dp, bottom = 24.dp))
-            Button(onClick = onToggle) { Text(if (running) "Stop receiver" else "Start receiver") }
+            Text(if (running) "已准备好接收电脑音频" else "启动接收服务以连接电脑", modifier = Modifier.padding(top = 12.dp, bottom = 24.dp))
+            Button(onClick = onToggle) { Text(if (running) "停止接收" else "开始接收") }
         }
     }
 }
