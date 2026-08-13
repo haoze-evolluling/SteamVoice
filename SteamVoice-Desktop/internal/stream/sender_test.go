@@ -38,3 +38,33 @@ func TestSenderAddsConfiguredBitrate(t *testing.T) {
 		t.Fatalf("header=%+v payload=%v", h, payload)
 	}
 }
+
+func TestSenderSendsPCMCodec(t *testing.T) {
+	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	sender, err := NewSender(listener.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	want := []byte{0, 1, 2, 3}
+	if err = sender.SendPCM(want); err != nil {
+		t.Fatal(err)
+	}
+	_ = listener.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 256)
+	n, _, err := listener.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, payload, err := protocol.Decode(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Codec != protocol.CodecPCM || string(payload) != string(want) {
+		t.Fatalf("header=%+v payload=%v", h, payload)
+	}
+}

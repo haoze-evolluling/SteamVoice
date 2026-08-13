@@ -69,8 +69,8 @@ func (a *App) Connect(device Device) error {
 	if bitrate == 0 {
 		bitrate = 128000
 	}
-	if device.Codec != "" && !strings.EqualFold(device.Codec, "opus") {
-		return fmt.Errorf("receiver does not support Opus (codec=%s)", device.Codec)
+	if device.Codec != "" && !strings.EqualFold(device.Codec, "opus") && !strings.EqualFold(device.Codec, "pcm") {
+		return fmt.Errorf("receiver does not support PCM/Opus (codec=%s)", device.Codec)
 	}
 	s, err := stream.NewSender(fmt.Sprintf("%s:%d", device.Host, device.Port), bitrate)
 	if err != nil {

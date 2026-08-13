@@ -9,6 +9,7 @@ const (
 	Magic             = "SV01"
 	Version           = 2
 	CodecOpus         = 1
+	CodecPCM          = 2
 	HeaderSize        = 32
 	SampleRate        = 48000
 	Channels          = 2
@@ -59,7 +60,7 @@ func Encode(h Header, opus []byte) ([]byte, error) {
 }
 
 func Decode(b []byte) (Header, []byte, error) {
-	if len(b) < HeaderSize || string(b[:4]) != Magic || b[4] != Version || b[5] != CodecOpus {
+	if len(b) < HeaderSize || string(b[:4]) != Magic || b[4] != Version || (b[5] != CodecOpus && b[5] != CodecPCM) {
 		return Header{}, nil, errors.New("invalid SteamVoice v2 packet")
 	}
 	h := Header{Codec: b[5], SampleRate: binary.BigEndian.Uint32(b[6:]), Channels: b[10], Bitrate: binary.BigEndian.Uint32(b[12:]), Session: binary.BigEndian.Uint32(b[16:]), Sequence: binary.BigEndian.Uint32(b[20:]), PayloadLength: binary.BigEndian.Uint16(b[24:]), FrameMilliseconds: binary.BigEndian.Uint16(b[26:])}

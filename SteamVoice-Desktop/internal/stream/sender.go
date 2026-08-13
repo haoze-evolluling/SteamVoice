@@ -46,5 +46,14 @@ func (s *Sender) SendOpus(opus []byte) error {
 }
 
 // SendPCM is retained as an API boundary; callers must provide Opus payloads in v2.
-func (s *Sender) SendPCM(opus []byte) error { return s.SendOpus(opus) }
-func (s *Sender) Close() error              { return s.conn.Close() }
+func (s *Sender) SendPCM(pcm []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, e := protocol.Encode(protocol.Header{Codec: protocol.CodecPCM, Bitrate: s.bitrate, Session: s.session, Sequence: s.seq}, pcm)
+	if e == nil {
+		_, e = s.conn.Write(b)
+		s.seq++
+	}
+	return e
+}
+func (s *Sender) Close() error { return s.conn.Close() }
