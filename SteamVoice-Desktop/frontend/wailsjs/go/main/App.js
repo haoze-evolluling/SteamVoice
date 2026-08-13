@@ -17,3 +17,7 @@ export function DiscoverDevices() {
 export function GetStatus() {
   return window['go']['main']['App']['GetStatus']();
 }
+
+export function SetMuted(arg1) {
+  return window['go']['main']['App']['SetMuted'](arg1);
+}

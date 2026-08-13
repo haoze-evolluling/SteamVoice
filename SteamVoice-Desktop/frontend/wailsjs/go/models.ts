@@ -32,6 +32,7 @@ export namespace main {
 	    Connected: boolean;
 	    Device?: Device;
 	    Message: string;
+	    Muted: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Status(source);
@@ -42,6 +43,7 @@ export namespace main {
 	        this.Connected = source["Connected"];
 	        this.Device = this.convertValues(source["Device"], Device);
 	        this.Message = source["Message"];
+	        this.Muted = source["Muted"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -8,6 +8,7 @@ data class SteamVoicePacket(
     val sampleRate: Int,
     val channels: Int,
     val bitrate: Int,
+    val muted: Boolean,
     val frameMilliseconds: Int,
     val session: Long,
     val sequence: Long,
@@ -35,6 +36,6 @@ object SteamVoiceProtocol {
         if (payloadLength + headerSize != length) return null
         val session = buffer.getInt(16).toLong() and 0xffffffffL
         val sequence = buffer.getInt(20).toLong() and 0xffffffffL
-        return SteamVoicePacket(data[5].toInt(), rate, channelCount, bitrate, frameMs, session, sequence, data.copyOfRange(headerSize, length))
+        return SteamVoicePacket(data[5].toInt(), rate, channelCount, bitrate, data[11].toInt() != 0, frameMs, session, sequence, data.copyOfRange(headerSize, length))
     }
 }
