@@ -15,8 +15,8 @@ android {
         applicationId = "com.haoze.steamvoice"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 10001
+        versionName = "1.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -36,8 +36,12 @@ android {
         }
         release {
             optimization {
-                enable = false
+                enable = true
             }
+            // Run R8 shrinking/obfuscation with the optimized Android defaults.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
         }
     }
     compileOptions {
