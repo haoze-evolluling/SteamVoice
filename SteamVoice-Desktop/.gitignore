@@ -1,5 +1,7 @@
 # Wails and Go build output
 /build/
+!/build/
+!/build/appicon.png
 /bin/
 *.exe
 *.dll
