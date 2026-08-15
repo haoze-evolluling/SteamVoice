@@ -9,7 +9,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -27,7 +26,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.Button
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Icon
@@ -58,7 +56,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val repository = SettingsRepository(applicationContext)
         setContent { SteamVoiceTheme { ReceiverScreen(running, ::toggleReceiver) { startActivity(Intent(this, SettingsActivity::class.java).putExtra("receiver_running", running)) } } }
     }
 
@@ -113,25 +110,53 @@ private fun SettingsScreen(settings: AudioSettings, repository: SettingsReposito
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 16.dp),
         ) {
-            Text("播放延迟", style = MaterialTheme.typography.titleMedium)
+            Text("初始发送码率", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(10.dp))
             SettingsGroup(
-                items = LatencyMode.entries.map { mode ->
-                    SettingRowData(mode.label, "约 ${mode.targetMs} ms", Icons.Default.Speed, mode == settings.latency) {
-                        scope.launch { repository.setLatency(mode); restart() }
+                items = listOf(64, 96, 128, 192).map { bitrate ->
+                    SettingRowData(
+                        "$bitrate kbps",
+                        if (bitrate == 128) "电脑端初始编码值，连接后会自动调整" else "电脑端连接时使用的初始 Opus 码率",
+                        Icons.Default.GraphicEq,
+                        bitrate == settings.initialBitrateKbps,
+                    ) {
+                        scope.launch { repository.setInitialBitrate(bitrate); restart() }
                     }
                 }
             )
             Spacer(Modifier.height(28.dp))
-            Text("音频码率", style = MaterialTheme.typography.titleMedium)
+            Text("接收格式", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(10.dp))
-            SettingsGroup(
-                items = listOf(64, 96, 128, 192).map { bitrate ->
-                    SettingRowData("$bitrate kbps", if (bitrate == 128) "推荐的音质和网络占用平衡" else "Opus 立体声传输", Icons.Default.GraphicEq, bitrate == settings.bitrateKbps) {
-                        scope.launch { repository.setBitrate(bitrate); restart() }
-                    }
-                }
-            )
+            ProtocolInfoGroup()
+        }
+    }
+}
+
+@Composable
+private fun ProtocolInfoGroup() {
+    Column(verticalArrangement = spacedBy(8.dp)) {
+        ProtocolInfoRow("编码器", "Opus")
+        ProtocolInfoRow("采样率", "${SteamVoiceProtocol.sampleRate} Hz")
+        ProtocolInfoRow("声道", "${SteamVoiceProtocol.channels} 声道立体声")
+        ProtocolInfoRow("音频帧", "${SteamVoiceProtocol.frameMilliseconds} ms")
+    }
+}
+
+@Composable
+private fun ProtocolInfoRow(title: String, value: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Default.GraphicEq, null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.padding(horizontal = 12.dp))
+            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
