@@ -9,6 +9,13 @@
 *.dylib
 *.test
 *.out
+*.log
+
+# Wails platform build products (keep tracked metadata/assets under build/)
+/build/bin/
+/build/windows/*.exe
+/build/windows/*.dll
+/build/windows/*.pdb
 
 # Frontend dependencies and generated assets
 /frontend/node_modules/

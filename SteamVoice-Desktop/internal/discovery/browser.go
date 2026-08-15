@@ -52,6 +52,9 @@ func (b *Browser) Start(parent context.Context) error {
 					values[strings.ToLower(p[0])] = p[1]
 				}
 			}
+			if !strings.EqualFold(values["codec"], "opus") {
+				continue
+			}
 			number := func(k string, fallback int) int {
 				if n, err := strconv.Atoi(values[k]); err == nil && n > 0 {
 					return n

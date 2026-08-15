@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/gen2brain/malgo v0.11.25
 	github.com/grandcat/zeroconf v1.0.0
+	github.com/hraban/opus v0.0.0-20260708213942-bde8e4304501
 	github.com/wailsapp/wails/v2 v2.10.2
 )
 

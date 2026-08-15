@@ -9,6 +9,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"steamvoice-desktop/internal/capture"
+	"steamvoice-desktop/internal/codec"
 	"steamvoice-desktop/internal/discovery"
 	"steamvoice-desktop/internal/stream"
 )
@@ -69,26 +70,45 @@ func (a *App) Connect(device Device) error {
 	if bitrate == 0 {
 		bitrate = 128000
 	}
-	if device.Codec != "" && !strings.EqualFold(device.Codec, "opus") && !strings.EqualFold(device.Codec, "pcm") {
-		return fmt.Errorf("receiver does not support PCM/Opus (codec=%s)", device.Codec)
+	if !strings.EqualFold(device.Codec, "opus") {
+		return fmt.Errorf("receiver does not support Opus (codec=%s)", device.Codec)
 	}
 	s, err := stream.NewSender(fmt.Sprintf("%s:%d", device.Host, device.Port), bitrate)
 	if err != nil {
 		return err
 	}
+	encoder, err := codec.NewOpusEncoder(bitrate)
+	if err != nil {
+		_ = s.Close()
+		return fmt.Errorf("初始化 Opus 编码器失败: %w", err)
+	}
+	s.SetBitrateCallback(func(next int) {
+		if err := encoder.SetBitrate(next); err != nil {
+			log.Printf("opus bitrate update failed: %v", err)
+		}
+	})
+	a.mu.Lock()
 	a.sender = s
+	a.mu.Unlock()
 	c, err := capture.Start(func(pcm []byte) {
 		a.mu.Lock()
 		sender := a.sender
 		a.mu.Unlock()
 		if sender != nil {
-			if err := sender.SendPCM(pcm); err != nil {
+			encoded, err := encoder.EncodePCM(pcm)
+			if err == nil {
+				err = sender.SendOpus(encoded)
+			}
+			if err != nil {
 				log.Printf("audio UDP send failed: %v", err)
 			}
 		}
 	})
 	if err != nil {
 		_ = s.Close()
+		a.mu.Lock()
+		a.sender = nil
+		a.mu.Unlock()
 		return fmt.Errorf("启动 WASAPI 系统音频采集失败: %w", err)
 	}
 	a.mu.Lock()

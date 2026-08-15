@@ -9,20 +9,51 @@ import (
 	"github.com/gen2brain/malgo"
 )
 
-type Loopback struct { ctx *malgo.AllocatedContext; device *malgo.Device; once sync.Once }
+type Loopback struct {
+	ctx    *malgo.AllocatedContext
+	device *malgo.Device
+	once   sync.Once
+}
+
+const frameBytes = 480 * 2 * 2
 
 func Start(onPCM func([]byte)) (*Loopback, error) {
 	ctx, err := malgo.InitContext([]malgo.Backend{malgo.BackendWasapi}, malgo.ContextConfig{}, nil)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	config := malgo.DefaultDeviceConfig(malgo.Loopback)
 	config.Capture.Format = malgo.FormatS16
 	config.Capture.Channels = 2
 	config.SampleRate = 48000
 	config.PerformanceProfile = malgo.LowLatency
 	var frames uint64
-	device, err := malgo.InitDevice(ctx.Context, config, malgo.DeviceCallbacks{Data: func(_, input []byte, _ uint32) { if len(input)>0 { frames++; if frames == 1 { log.Printf("WASAPI loopback started, first PCM frame=%d bytes", len(input)) }; frame:=append([]byte(nil), input...); onPCM(frame) } }})
-	if err != nil { _ = ctx.Uninit(); ctx.Free(); return nil, err }
-	if err = device.Start(); err != nil { device.Uninit(); _=ctx.Uninit(); ctx.Free(); return nil, err }
-	return &Loopback{ctx:ctx,device:device}, nil
+	var pending []byte
+	device, err := malgo.InitDevice(ctx.Context, config, malgo.DeviceCallbacks{Data: func(_, input []byte, _ uint32) {
+		if len(input) > 0 {
+			pending = append(pending, input...)
+			for len(pending) >= frameBytes {
+				frames++
+				frame := append([]byte(nil), pending[:frameBytes]...)
+				pending = pending[frameBytes:]
+				if frames == 1 {
+					log.Printf("WASAPI loopback started, PCM frame=%d bytes", len(frame))
+				}
+				onPCM(frame)
+			}
+		}
+	}})
+	if err != nil {
+		_ = ctx.Uninit()
+		ctx.Free()
+		return nil, err
+	}
+	if err = device.Start(); err != nil {
+		device.Uninit()
+		_ = ctx.Uninit()
+		ctx.Free()
+		return nil, err
+	}
+	return &Loopback{ctx: ctx, device: device}, nil
 }
-func (l *Loopback) Close() { l.once.Do(func(){ l.device.Uninit(); _=l.ctx.Uninit(); l.ctx.Free() }) }
+func (l *Loopback) Close() { l.once.Do(func() { l.device.Uninit(); _ = l.ctx.Uninit(); l.ctx.Free() }) }

@@ -1,0 +1,49 @@
+# OS and editor metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Local agent/tool metadata
+.trae/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Android/Gradle generated files
+**/.gradle/
+**/.kotlin/
+**/build/
+**/.cxx/
+**/.externalNativeBuild/
+**/local.properties
+**/captures/
+**/*.apk
+**/*.aab
+**/*.apks
+**/*.log
+
+# Java/Kotlin generated output
+*.class
+*.jar
+*.iml
+
+# Go/Wails generated output and local binaries
+**/bin/
+**/*.exe
+**/*.dll
+**/*.so
+**/*.dylib
+**/*.test
+**/*.out
+
+# Frontend dependencies and generated output
+**/node_modules/
+**/dist/
+**/package.json.md5

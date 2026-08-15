@@ -6,14 +6,18 @@ import (
 )
 
 const (
-	Magic             = "SV01"
-	Version           = 2
-	CodecOpus         = 1
-	CodecPCM          = 2
-	HeaderSize        = 32
-	SampleRate        = 48000
-	Channels          = 2
-	FrameMilliseconds = 20
+	Magic               = "SV01"
+	Version             = 3
+	CodecOpus           = 1
+	CodecPCM            = 2
+	HeaderSize          = 32
+	SampleRate          = 48000
+	Channels            = 2
+	FrameMilliseconds   = 20
+	FrameMillisecondsV3 = 10
+	FlagFEC             = 1 << 0
+	FlagDTX             = 1 << 1
+	FlagControl         = 1 << 7
 )
 
 // Header is the metadata carried by every v2 Opus datagram.
@@ -26,6 +30,7 @@ type Header struct {
 	Sequence          uint32
 	PayloadLength     uint16
 	FrameMilliseconds uint16
+	Flags             uint8
 }
 
 func Encode(h Header, opus []byte) ([]byte, error) {
@@ -42,7 +47,7 @@ func Encode(h Header, opus []byte) ([]byte, error) {
 		h.Channels = Channels
 	}
 	if h.FrameMilliseconds == 0 {
-		h.FrameMilliseconds = FrameMilliseconds
+		h.FrameMilliseconds = FrameMillisecondsV3
 	}
 	b := make([]byte, HeaderSize+len(opus))
 	copy(b, Magic)
@@ -55,6 +60,7 @@ func Encode(h Header, opus []byte) ([]byte, error) {
 	binary.BigEndian.PutUint32(b[20:], h.Sequence)
 	binary.BigEndian.PutUint16(b[24:], uint16(len(opus)))
 	binary.BigEndian.PutUint16(b[26:], h.FrameMilliseconds)
+	b[28] = h.Flags
 	copy(b[HeaderSize:], opus)
 	return b, nil
 }
@@ -63,8 +69,8 @@ func Decode(b []byte) (Header, []byte, error) {
 	if len(b) < HeaderSize || string(b[:4]) != Magic || b[4] != Version || (b[5] != CodecOpus && b[5] != CodecPCM) {
 		return Header{}, nil, errors.New("invalid SteamVoice v2 packet")
 	}
-	h := Header{Codec: b[5], SampleRate: binary.BigEndian.Uint32(b[6:]), Channels: b[10], Bitrate: binary.BigEndian.Uint32(b[12:]), Session: binary.BigEndian.Uint32(b[16:]), Sequence: binary.BigEndian.Uint32(b[20:]), PayloadLength: binary.BigEndian.Uint16(b[24:]), FrameMilliseconds: binary.BigEndian.Uint16(b[26:])}
-	if h.SampleRate != SampleRate || h.Channels != Channels || h.FrameMilliseconds == 0 {
+	h := Header{Codec: b[5], SampleRate: binary.BigEndian.Uint32(b[6:]), Channels: b[10], Bitrate: binary.BigEndian.Uint32(b[12:]), Session: binary.BigEndian.Uint32(b[16:]), Sequence: binary.BigEndian.Uint32(b[20:]), PayloadLength: binary.BigEndian.Uint16(b[24:]), FrameMilliseconds: binary.BigEndian.Uint16(b[26:]), Flags: b[28]}
+	if h.SampleRate != SampleRate || h.Channels != Channels || h.FrameMilliseconds != FrameMillisecondsV3 {
 		return Header{}, nil, errors.New("unsupported audio format")
 	}
 	n := int(h.PayloadLength)

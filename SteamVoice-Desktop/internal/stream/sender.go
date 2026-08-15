@@ -6,13 +6,21 @@ import (
 	"net"
 	"steamvoice-desktop/internal/protocol"
 	"sync"
+	"time"
 )
+
+const minBitrate = 48000
+const bitrateStep = 16000
 
 type Sender struct {
 	conn         *net.UDPConn
 	session, seq uint32
 	bitrate      uint32
+	frameMs      uint16
 	mu           sync.Mutex
+	feedbackDone chan struct{}
+	feedbackWG   sync.WaitGroup
+	onBitrate    func(int)
 }
 
 func NewSender(address string, bitrate ...int) (*Sender, error) {
@@ -30,14 +38,83 @@ func NewSender(address string, bitrate ...int) (*Sender, error) {
 	if len(bitrate) > 0 && bitrate[0] > 0 {
 		br = bitrate[0]
 	}
-	return &Sender{conn: c, session: binary.BigEndian.Uint32(raw[:]), bitrate: uint32(br)}, nil
+	s := &Sender{conn: c, session: binary.BigEndian.Uint32(raw[:]), bitrate: uint32(br), frameMs: protocol.FrameMillisecondsV3, feedbackDone: make(chan struct{})}
+	s.feedbackWG.Add(1)
+	go s.feedbackLoop()
+	return s, nil
+}
+
+func (s *Sender) SetBitrateCallback(fn func(int)) { s.mu.Lock(); s.onBitrate = fn; s.mu.Unlock() }
+func (s *Sender) feedbackLoop() {
+	defer s.feedbackWG.Done()
+	buf := make([]byte, 256)
+	lowSince := time.Time{}
+	for {
+		s.conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		n, _, err := s.conn.ReadFromUDP(buf)
+		if err != nil {
+			select {
+			case <-s.feedbackDone:
+				return
+			default:
+			}
+			continue
+		}
+		f, err := protocol.DecodeFeedback(buf[:n])
+		if err != nil || f.Session != s.session {
+			continue
+		}
+		s.mu.Lock()
+		cur := int(s.bitrate)
+		loss := float64(f.Lost) / float64(max32(f.Received+f.Lost, 1))
+		next := cur
+		if loss > 0.05 || f.Queue > 1 {
+			next -= bitrateStep
+			lowSince = time.Time{}
+		} else if loss < 0.01 {
+			if lowSince.IsZero() {
+				lowSince = time.Now()
+			} else if time.Since(lowSince) >= 2*time.Second {
+				next += bitrateStep
+				lowSince = time.Time{}
+			}
+		} else {
+			lowSince = time.Time{}
+		}
+		next = clamp(next)
+		if next != cur {
+			s.bitrate = uint32(next)
+			cb := s.onBitrate
+			s.mu.Unlock()
+			if cb != nil {
+				cb(next)
+			}
+		} else {
+			s.mu.Unlock()
+		}
+	}
+}
+func max32(a, b uint32) uint32 {
+	if a > b {
+		return a
+	}
+	return b
+}
+func clamp(b int) int {
+	if b < minBitrate {
+		return minBitrate
+	}
+	if b > 192000 {
+		return 192000
+	}
+	return minBitrate + ((b-minBitrate+8000)/16000)*16000
 }
 
 // SendOpus sends one already encoded 20 ms Opus frame.
 func (s *Sender) SendOpus(opus []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, e := protocol.Encode(protocol.Header{Codec: protocol.CodecOpus, Bitrate: s.bitrate, Session: s.session, Sequence: s.seq}, opus)
+	b, e := protocol.Encode(protocol.Header{Codec: protocol.CodecOpus, Bitrate: s.bitrate, Session: s.session, Sequence: s.seq, FrameMilliseconds: s.frameMs, Flags: protocol.FlagFEC | protocol.FlagDTX}, opus)
 	if e == nil {
 		_, e = s.conn.Write(b)
 		s.seq++
@@ -45,11 +122,11 @@ func (s *Sender) SendOpus(opus []byte) error {
 	return e
 }
 
-// SendPCM is retained as an API boundary; callers must provide Opus payloads in v2.
+// SendPCM is retained only for tests and is not used by the application path.
 func (s *Sender) SendPCM(pcm []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, e := protocol.Encode(protocol.Header{Codec: protocol.CodecPCM, Bitrate: s.bitrate, Session: s.session, Sequence: s.seq}, pcm)
+	b, e := protocol.Encode(protocol.Header{Codec: protocol.CodecPCM, Bitrate: s.bitrate, Session: s.session, Sequence: s.seq, FrameMilliseconds: s.frameMs}, pcm)
 	if e == nil {
 		_, e = s.conn.Write(b)
 		s.seq++
@@ -57,4 +134,9 @@ func (s *Sender) SendPCM(pcm []byte) error {
 	return e
 }
 
-func (s *Sender) Close() error { return s.conn.Close() }
+func (s *Sender) Close() error {
+	close(s.feedbackDone)
+	_ = s.conn.Close()
+	s.feedbackWG.Wait()
+	return nil
+}

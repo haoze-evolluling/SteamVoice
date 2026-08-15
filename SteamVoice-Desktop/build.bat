@@ -20,8 +20,20 @@ if errorlevel 1 (
 )
 
 set "CGO_ENABLED=1"
+where pkg-config >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] pkg-config was not found on PATH.
+    set "BUILD_EXIT=1"
+    goto :done
+)
+pkg-config --exists opus
+if errorlevel 1 (
+    echo [ERROR] libopus development files were not found by pkg-config.
+    set "BUILD_EXIT=1"
+    goto :done
+)
 echo Building SteamVoice Desktop...
-wails build
+wails build -tags steamvoice_opus
 if errorlevel 1 (
     echo [ERROR] Desktop build failed.
     set "BUILD_EXIT=1"
