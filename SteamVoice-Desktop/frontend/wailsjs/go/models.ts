@@ -1,3 +1,24 @@
+export namespace config {
+	
+	export class AuthorizedDevice {
+	    id: string;
+	    name: string;
+	    addedAtMs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new AuthorizedDevice(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.addedAtMs = source["addedAtMs"];
+	    }
+	}
+
+}
+
 export namespace main {
 	
 	export class Device {
@@ -54,6 +75,20 @@ export namespace main {
 	        this.Message = source["Message"];
 	        this.Bitrate = source["Bitrate"];
 	        this.FrameMs = source["FrameMs"];
+	    }
+	}
+	export class Identity {
+	    DeviceID: string;
+	    Name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Identity(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.DeviceID = source["DeviceID"];
+	        this.Name = source["Name"];
 	    }
 	}
 	export class Status {

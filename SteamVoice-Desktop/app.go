@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -12,7 +16,9 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"steamvoice-desktop/internal/capture"
 	"steamvoice-desktop/internal/codec"
+	"steamvoice-desktop/internal/config"
 	"steamvoice-desktop/internal/discovery"
+	"steamvoice-desktop/internal/gateway"
 	"steamvoice-desktop/internal/protocol"
 	"steamvoice-desktop/internal/stream"
 )
@@ -48,9 +54,28 @@ type Status struct {
 	Devices        []DeviceStatus
 }
 
+// ConnRequestInfo describes an inbound connection request awaiting the
+// user's decision, pushed on conn:request.
+type ConnRequestInfo struct {
+	RequestID string
+	DeviceID  string
+	Name      string
+	Host      string
+}
+
+// Identity exposes this desktop's stable device identity to the frontend.
+type Identity struct {
+	DeviceID string
+	Name     string
+}
+
 // feedbackStaleAfter is how long without receiver feedback marks a session
 // unresponsive; receivers report roughly every 200 ms while playing.
 const feedbackStaleAfter = 3 * time.Second
+
+// requestExpiry is how long an unanswered authorization prompt stays alive
+// before the desktop gives up and cancels it.
+const requestExpiry = 30 * time.Second
 
 type deviceSession struct {
 	device  Device
@@ -60,23 +85,79 @@ type deviceSession struct {
 	status  DeviceStatus
 }
 
+type pendingRequest struct {
+	info  ConnRequestInfo
+	peer  gateway.Peer
+	timer *time.Timer
+}
+
 type App struct {
-	ctx         context.Context
-	mu          sync.Mutex
-	discoverer  *discovery.Browser
-	sessions    map[string]*deviceSession
-	capture     *capture.Loopback
-	frameMs     int
-	staleAfter  time.Duration
+	ctx             context.Context
+	mu              sync.Mutex
+	discoverer      *discovery.Browser
+	advertiser      *discovery.Advertiser
+	sessions        map[string]*deviceSession
+	capture         *capture.Loopback
+	frameMs         int
+	staleAfter      time.Duration
+	requestTimeout  time.Duration
+	store           *config.File
+	listener        *gateway.Listener
+	pending         map[string]*pendingRequest
+	pendingByDevice map[string]string
+	localBitrate    int
+	localFrameMs    int
 }
 
 func NewApp() *App {
-	return &App{sessions: map[string]*deviceSession{}, staleAfter: feedbackStaleAfter}
+	var store *config.File
+	if path, err := config.DefaultPath(); err == nil {
+		if loaded, err := config.Load(path); err == nil {
+			store = loaded
+		} else {
+			log.Printf("config load failed, using in-memory identity: %v", err)
+		}
+	}
+	if store == nil {
+		store = config.Memory()
+	}
+	return NewAppWithStore(store)
+}
+
+// NewAppWithStore wires an explicit identity/trust store; tests use it to
+// avoid touching the real config file.
+func NewAppWithStore(store *config.File) *App {
+	return &App{sessions: map[string]*deviceSession{}, staleAfter: feedbackStaleAfter, requestTimeout: requestExpiry, pending: map[string]*pendingRequest{}, pendingByDevice: map[string]string{}, localBitrate: 128000, localFrameMs: 10, store: store}
 }
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
+	if a.store.Name() == "" {
+		if host, err := os.Hostname(); err == nil && strings.TrimSpace(host) != "" {
+			_ = a.store.SetName(strings.TrimSpace(host))
+		}
+	}
+	listener, err := gateway.Start(protocol.DesktopControlPort, a.store.DeviceID, a.onConnRequest, a.onConnBye)
+	if err != nil {
+		// The app still works as a sender; only inbound connections break.
+		log.Printf("control listener unavailable (another instance running?): %v", err)
+	} else {
+		a.listener = listener
+	}
+	if advertiser, err := discovery.Advertise("SteamVoice-"+a.pcName(), a.store.DeviceID, protocol.DesktopControlPort); err != nil {
+		log.Printf("mDNS advertise failed: %v", err)
+	} else {
+		a.advertiser = advertiser
+	}
 	go a.monitorLoop(ctx)
 }
+
+func (a *App) pcName() string {
+	if name := a.store.Name(); name != "" {
+		return name
+	}
+	return "PC"
+}
+
 func (a *App) Shutdown(context.Context) {
 	a.mu.Lock()
 	sessions := a.sessions
@@ -84,7 +165,22 @@ func (a *App) Shutdown(context.Context) {
 	a.sessions = map[string]*deviceSession{}
 	a.capture = nil
 	a.frameMs = 0
+	listener := a.listener
+	advertiser := a.advertiser
+	a.listener = nil
+	a.advertiser = nil
+	for _, entry := range a.pending {
+		entry.timer.Stop()
+	}
+	a.pending = map[string]*pendingRequest{}
+	a.pendingByDevice = map[string]string{}
 	a.mu.Unlock()
+	if advertiser != nil {
+		advertiser.Close()
+	}
+	if listener != nil {
+		listener.Close()
+	}
 	if c != nil {
 		c.Close()
 	}
@@ -246,6 +342,156 @@ func (a *App) GetStatus() Status {
 		status.Message = fmt.Sprintf("已连接 %d 台接收端，正在发送电脑音频", status.ConnectedCount)
 	}
 	return status
+}
+
+// GetIdentity exposes the stable desktop identity used for authorization.
+func (a *App) GetIdentity() Identity {
+	return Identity{DeviceID: a.store.DeviceID, Name: a.pcName()}
+}
+
+// ListAuthorizedDevices returns the remembered receivers that may connect
+// without a confirmation prompt.
+func (a *App) ListAuthorizedDevices() []config.AuthorizedDevice {
+	return a.store.List()
+}
+
+// RemoveAuthorizedDevice drops a remembered receiver so its next connection
+// asks for confirmation again.
+func (a *App) RemoveAuthorizedDevice(deviceID string) error {
+	return a.store.Remove(deviceID)
+}
+
+// SaveLocalSettings mirrors the frontend audio settings into the backend so
+// inbound-initiated sessions encode with the same parameters the user picked.
+func (a *App) SaveLocalSettings(bitrate int, frameMs int) {
+	if bitrate != 64000 && bitrate != 96000 && bitrate != 128000 && bitrate != 192000 {
+		return
+	}
+	if frameMs != 10 && frameMs != 20 {
+		return
+	}
+	a.mu.Lock()
+	a.localBitrate = bitrate
+	a.localFrameMs = frameMs
+	a.mu.Unlock()
+}
+
+// RespondConnection answers a pending inbound request. remember stores the
+// device so future requests are auto-accepted.
+func (a *App) RespondConnection(requestID string, allow bool, remember bool) error {
+	a.mu.Lock()
+	entry, ok := a.pending[requestID]
+	if !ok {
+		a.mu.Unlock()
+		return fmt.Errorf("连接请求已过期或已处理")
+	}
+	delete(a.pending, requestID)
+	delete(a.pendingByDevice, entry.peer.DeviceID)
+	entry.timer.Stop()
+	listener := a.listener
+	a.mu.Unlock()
+	if listener == nil {
+		return fmt.Errorf("控制通道不可用")
+	}
+	if remember && allow {
+		if err := a.store.Authorize(entry.peer.DeviceID, entry.peer.Name); err != nil {
+			log.Printf("persisting authorization failed: %v", err)
+		}
+	}
+	if err := listener.Respond(entry.peer, allow); err != nil {
+		return fmt.Errorf("发送授权结果失败: %w", err)
+	}
+	if allow {
+		go func() {
+			if err := a.Connect(a.deviceFromPeer(entry.peer)); err != nil {
+				log.Printf("inbound connect to %s failed: %v", entry.peer.Name, err)
+				a.emitStatus(DeviceStatus{DeviceID: entry.peer.DeviceID, Name: entry.peer.Name, Message: "连接失败: " + err.Error()})
+			}
+		}()
+	}
+	return nil
+}
+
+// onConnRequest handles a receiver-initiated connection: trusted or already
+// streaming devices are accepted instantly, everything else waits for the
+// authorization modal.
+func (a *App) onConnRequest(peer gateway.Peer) {
+	a.mu.Lock()
+	_, streaming := a.sessions[peer.DeviceID]
+	trusted := a.store.IsAuthorized(peer.DeviceID)
+	if streaming || trusted {
+		a.mu.Unlock()
+		if err := a.listener.Respond(peer, true); err != nil {
+			log.Printf("responding to %s failed: %v", peer.DeviceID, err)
+			return
+		}
+		if streaming {
+			go func() {
+				if err := a.Connect(a.deviceFromPeer(peer)); err != nil {
+					log.Printf("reconnect to %s failed: %v", peer.DeviceID, err)
+				}
+			}()
+		}
+		return
+	}
+	if oldID, dup := a.pendingByDevice[peer.DeviceID]; dup {
+		if old, ok := a.pending[oldID]; ok {
+			old.timer.Stop()
+			delete(a.pending, oldID)
+		}
+	}
+	requestID := newRequestID()
+	entry := &pendingRequest{info: ConnRequestInfo{RequestID: requestID, DeviceID: peer.DeviceID, Name: peer.Name, Host: peer.Addr.IP.String()}, peer: peer}
+	entry.timer = time.AfterFunc(a.requestTimeout, func() { a.expireRequest(requestID, entry) })
+	a.pending[requestID] = entry
+	a.pendingByDevice[peer.DeviceID] = requestID
+	ctx := a.ctx
+	a.mu.Unlock()
+	if ctx != nil {
+		runtime.EventsEmit(ctx, "conn:request", entry.info)
+	}
+}
+
+// onConnBye drops the session when a receiver says goodbye.
+func (a *App) onConnBye(deviceID string, _ *net.UDPAddr) {
+	if err := a.Disconnect(deviceID); err != nil {
+		log.Printf("disconnect after bye from %s failed: %v", deviceID, err)
+	}
+}
+
+func (a *App) expireRequest(requestID string, entry *pendingRequest) {
+	a.mu.Lock()
+	current, ok := a.pending[requestID]
+	if !ok || current != entry {
+		a.mu.Unlock()
+		return
+	}
+	delete(a.pending, requestID)
+	delete(a.pendingByDevice, entry.peer.DeviceID)
+	ctx := a.ctx
+	a.mu.Unlock()
+	if ctx != nil {
+		runtime.EventsEmit(ctx, "conn:cancelled", entry.info.RequestID)
+	}
+}
+
+func (a *App) deviceFromPeer(peer gateway.Peer) Device {
+	name := strings.TrimSpace(peer.Name)
+	if name == "" {
+		name = "Android 设备"
+	}
+	a.mu.Lock()
+	bitrate, frameMs := a.localBitrate, a.localFrameMs
+	a.mu.Unlock()
+	return Device{Name: name, Host: peer.Addr.IP.String(), Port: protocol.ReceiverAudioPort, ID: peer.DeviceID, Codec: "opus", SampleRate: protocol.SampleRate, Channels: protocol.Channels, Bitrate: bitrate, FrameMs: frameMs, SupportedFrameMs: []int{10, 20}}
+}
+
+func newRequestID() string {
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(raw[:])
 }
 
 // onPCM runs on the WASAPI capture thread: encode once per session and send.

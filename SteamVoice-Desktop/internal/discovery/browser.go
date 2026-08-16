@@ -55,6 +55,9 @@ func (b *Browser) Start(parent context.Context) error {
 					values[strings.ToLower(p[0])] = p[1]
 				}
 			}
+			if strings.EqualFold(values["role"], "pc") {
+				continue
+			}
 			if !strings.EqualFold(values["codec"], "opus") {
 				continue
 			}
@@ -78,7 +81,14 @@ func (b *Browser) Start(parent context.Context) error {
 				currentFrame = frameOptions[0]
 			}
 			updatedAt, _ := strconv.ParseInt(values["settings_updated_at"], 10, 64)
-			b.onDevice(Device{Name: name, Host: host, Port: e.Port, ID: e.Instance, Codec: values["codec"], SampleRate: number("sample_rate", 48000), Channels: number("channels", 2), Bitrate: number("bitrate", 128000), FrameMs: currentFrame, SupportedFrameMs: frameOptions, UpdatedAtMs: updatedAt, SettingsDeviceID: values["settings_device_id"]})
+			// Prefer the receiver's stable identity over the mDNS instance
+			// name, which gets conflict suffixes like "(2)" and would fork
+			// sessions for the same physical device.
+			id := values["settings_device_id"]
+			if id == "" {
+				id = e.Instance
+			}
+			b.onDevice(Device{Name: name, Host: host, Port: e.Port, ID: id, Codec: values["codec"], SampleRate: number("sample_rate", 48000), Channels: number("channels", 2), Bitrate: number("bitrate", 128000), FrameMs: currentFrame, SupportedFrameMs: frameOptions, UpdatedAtMs: updatedAt, SettingsDeviceID: values["settings_device_id"]})
 		}
 	}()
 	return b.resolver.Browse(ctx, "_steamvoice._udp", "local.", entries)

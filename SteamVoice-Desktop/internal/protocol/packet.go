@@ -18,6 +18,12 @@ const (
 	FlagFEC             = 1 << 0
 	FlagDTX             = 1 << 1
 	FlagControl         = 1 << 7
+	// ReceiverAudioPort is the fixed UDP port Android receivers listen on
+	// for audio, feedback and control datagrams.
+	ReceiverAudioPort = 40125
+	// DesktopControlPort is the fixed UDP port desktops listen on for
+	// connection control from receivers.
+	DesktopControlPort = 40126
 )
 
 // Header is the metadata carried by every v2 Opus datagram.

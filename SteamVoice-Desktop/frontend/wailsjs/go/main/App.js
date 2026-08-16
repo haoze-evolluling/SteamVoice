@@ -14,6 +14,26 @@ export function DiscoverDevices() {
   return window['go']['main']['App']['DiscoverDevices']();
 }
 
+export function GetIdentity() {
+  return window['go']['main']['App']['GetIdentity']();
+}
+
 export function GetStatus() {
   return window['go']['main']['App']['GetStatus']();
+}
+
+export function ListAuthorizedDevices() {
+  return window['go']['main']['App']['ListAuthorizedDevices']();
+}
+
+export function RemoveAuthorizedDevice(arg1) {
+  return window['go']['main']['App']['RemoveAuthorizedDevice'](arg1);
+}
+
+export function RespondConnection(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RespondConnection'](arg1, arg2, arg3);
+}
+
+export function SaveLocalSettings(arg1, arg2) {
+  return window['go']['main']['App']['SaveLocalSettings'](arg1, arg2);
 }

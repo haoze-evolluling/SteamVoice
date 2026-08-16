@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { Connect, DiscoverDevices, Disconnect, GetStatus } from '../wailsjs/go/main/App';
+import { Connect, DiscoverDevices, Disconnect, GetStatus, GetIdentity, ListAuthorizedDevices, RemoveAuthorizedDevice, RespondConnection, SaveLocalSettings } from '../wailsjs/go/main/App';
 import { EventsOn, WindowSetDarkTheme, WindowSetLightTheme, WindowSetSystemDefaultTheme } from '../wailsjs/runtime/runtime';
 
 type Theme = 'light' | 'dark' | 'system';
 type Settings = { bitrate: number; frameMs: number; theme: Theme; updatedAtMs: number; deviceId: string };
 type Device = { name: string; host: string; port: number; id: string; codec: string; sampleRate: number; channels: number; bitrate: number; frameMs: number; supportedFrameMs: number[]; updatedAtMs: number; settingsDeviceId: string };
 type DeviceStatus = { deviceId: string; name: string; connected: boolean; message: string; bitrate: number; frameMs: number };
+type ConnRequest = { requestId: string; deviceId: string; name: string; host: string };
+type AuthorizedDevice = { ID: string; Name: string; AddedAtMs: number };
 const settingsKey = 'steamvoice.desktop.settings.v2';
 const deviceIdKey = 'steamvoice.desktop.device_id';
 const deviceId = localStorage.getItem(deviceIdKey) ?? crypto.randomUUID();
@@ -18,6 +20,10 @@ const page = ref<'devices' | 'settings'>('devices');
 const devices = ref<Device[]>([]);
 const status = ref('未连接接收端');
 const connected = ref<Record<string, DeviceStatus>>({});
+const connRequest = ref<ConnRequest | null>(null);
+const rememberChoice = ref(true);
+const identity = ref<{ deviceId: string; name: string }>({ deviceId: '', name: '' });
+const authorizedDevices = ref<AuthorizedDevice[]>([]);
 const connectedCount = computed(() => Object.keys(connected.value).length);
 const connectedDevices = computed(() => devices.value.filter((device) => connected.value[device.id]));
 const headerStatus = computed(() => (connectedCount.value > 0 ? `已连接 ${connectedCount.value} 台接收端，正在发送电脑音频` : status.value));
@@ -60,6 +66,24 @@ function applyTheme(theme: Theme) {
   if (theme === 'dark') WindowSetDarkTheme(); else if (theme === 'light') WindowSetLightTheme(); else WindowSetSystemDefaultTheme();
 }
 async function discover() { devices.value = []; try { await DiscoverDevices(); } catch { status.value = '无法发现接收端'; } }
+async function refreshAuthorized() {
+  try {
+    const list: any = await ListAuthorizedDevices();
+    authorizedDevices.value = (Array.isArray(list) ? list : []).map((raw: any) => ({ ID: String(raw?.ID ?? raw?.id ?? ''), Name: String(raw?.Name ?? raw?.name ?? ''), AddedAtMs: Number(raw?.AddedAtMs ?? raw?.addedAtMs) || 0 }));
+  } catch { authorizedDevices.value = []; }
+}
+async function respondConnection(allow: boolean) {
+  const request = connRequest.value;
+  if (!request) return;
+  connRequest.value = null;
+  try {
+    await RespondConnection(request.requestId, allow, rememberChoice.value);
+    if (allow) status.value = `已允许 ${request.name} 连接`;
+  } catch (error) { status.value = `授权失败：${error instanceof Error ? error.message : String(error)}`; }
+}
+async function removeAuthorized(device: AuthorizedDevice) {
+  try { await RemoveAuthorizedDevice(device.ID); await refreshAuthorized(); } catch { status.value = '移除授权失败'; }
+}
 async function connect(device: Device) {
   if (connected.value[device.id]) return;
   if (!device.supportedFrameMs.includes(settings.value.frameMs)) { status.value = `该接收端不支持 ${settings.value.frameMs} ms 音频帧`; return; }
@@ -70,10 +94,12 @@ async function connect(device: Device) {
 async function disconnect(device: Device) {
   try { await Disconnect(device.id); delete connected.value[device.id]; } catch { status.value = '断开连接失败'; }
 }
-watch(settings, (next) => { localStorage.setItem(settingsKey, JSON.stringify(next)); applyTheme(next.theme); }, { deep: true });
+watch(settings, (next) => { localStorage.setItem(settingsKey, JSON.stringify(next)); applyTheme(next.theme); SaveLocalSettings(next.bitrate, next.frameMs).catch(() => {}); }, { deep: true });
+watch(page, (next) => { if (next === 'settings') { refreshAuthorized(); GetIdentity().then((value: any) => { identity.value = { deviceId: String(value?.deviceId ?? value?.DeviceID ?? ''), name: String(value?.name ?? value?.Name ?? '') }; }).catch(() => {}); } });
 onMounted(async () => {
   try { settings.value = normalizeSettings(JSON.parse(localStorage.getItem(settingsKey) ?? 'null')); } catch { settings.value = { ...defaults }; }
   applyTheme(settings.value.theme);
+  SaveLocalSettings(settings.value.bitrate, settings.value.frameMs).catch(() => {});
   try {
     const value: any = await GetStatus();
     const list: any[] = Array.isArray(value?.devices) ? value.devices : Array.isArray(value?.Devices) ? value.Devices : [];
@@ -87,6 +113,8 @@ onMounted(async () => {
     if (value.connected) connected.value[value.deviceId] = value;
     else { delete connected.value[value.deviceId]; if (value.message) status.value = value.message; }
   });
+  EventsOn('conn:request', (raw: any) => { connRequest.value = { requestId: String(raw?.requestId ?? raw?.RequestID ?? ''), deviceId: String(raw?.deviceId ?? raw?.DeviceID ?? ''), name: String(raw?.name ?? raw?.Name ?? '未知设备'), host: String(raw?.host ?? raw?.Host ?? '') }; rememberChoice.value = true; });
+  EventsOn('conn:cancelled', (requestId: unknown) => { if (connRequest.value && String(requestId) === connRequest.value.requestId) connRequest.value = null; });
   discover();
 });
 </script>
@@ -109,9 +137,36 @@ onMounted(async () => {
       <fieldset><legend>初始 Opus 码率</legend><label v-for="bitrate in [64000, 96000, 128000, 192000]" :key="bitrate" class="choice"><input v-model="settings.bitrate" @change="touch({ bitrate })" type="radio" name="bitrate" :value="bitrate"><span>{{ bitrate / 1000 }} kbps</span></label></fieldset>
       <fieldset><legend>音频帧时长</legend><label v-for="frame in [10, 20]" :key="frame" class="choice" :class="{ disabled: !supportedFrames.includes(frame) }"><input v-model="settings.frameMs" @change="touch({ frameMs: frame })" type="radio" name="frame" :value="frame" :disabled="!supportedFrames.includes(frame)"><span>{{ frame }} ms</span></label><p v-if="!frameAvailable" class="warning">当前已连接的接收端不支持所选帧时长；请先断开全部设备后再更改。</p></fieldset>
       <fieldset><legend>外观</legend><label v-for="theme in themeOptions" :key="theme" class="choice"><input v-model="settings.theme" type="radio" name="theme" :value="theme"><span>{{ theme === 'light' ? '浅色' : theme === 'dark' ? '深色' : '跟随系统' }}</span></label></fieldset>
-      <fieldset class="readonly"><legend>接收格式</legend><p>编码器：Opus</p><p>采样率：48 kHz</p><p>声道：立体声</p></fieldset>
+      <fieldset><legend>已授权设备</legend>
+        <p class="field-hint">以下设备连接这台电脑时无需再次确认</p>
+        <div v-if="authorizedDevices.length" class="authorized">
+          <div v-for="device in authorizedDevices" :key="device.ID" class="authorized-row">
+            <div><strong>{{ device.Name || '未命名设备' }}</strong><span class="muted">{{ device.ID }}</span></div>
+            <button class="secondary danger" @click="removeAuthorized(device)">移除</button>
+          </div>
+        </div>
+        <p v-else class="field-hint">暂无已授权设备。当 Android 设备主动连接时，可以选择记住它。</p>
+      </fieldset>
+      <fieldset class="readonly"><legend>本机信息</legend>
+        <p>设备名称：{{ identity.name || '未命名' }}</p>
+        <p>设备标识：{{ identity.deviceId }}</p>
+        <p>编码器：Opus</p><p>采样率：48 kHz</p><p>声道：立体声</p>
+      </fieldset>
     </section>
     <footer>{{ connectedCount ? `已连接 ${connectedCount} 台 · ` : '' }}{{ settings.bitrate / 1000 }} kbps · {{ settings.frameMs }} ms · 48 kHz 立体声 Opus · UDP 局域网传输</footer>
+
+    <div v-if="connRequest" class="modal-overlay">
+      <div class="modal" role="dialog" aria-modal="true">
+        <h3>连接请求</h3>
+        <p class="modal-device">{{ connRequest.name }}</p>
+        <p class="muted">{{ connRequest.host }} 想要把这台电脑的音频推送到它上面播放。</p>
+        <label class="choice"><input v-model="rememberChoice" type="checkbox"><span>以后自动同意该设备</span></label>
+        <div class="modal-actions">
+          <button class="secondary" @click="respondConnection(false)">拒绝</button>
+          <button @click="respondConnection(true)">允许</button>
+        </div>
+      </div>
+    </div>
   </main>
 </template>
 
@@ -130,4 +185,15 @@ body { margin: 0; background: inherit; } main { max-width: 940px; margin: auto; 
   :root[data-theme='system'] .live-info { color: #4fc08d; }
 }
 @media (max-width: 600px) { main { padding: 26px 18px; } header { align-items: flex-start; flex-wrap: wrap; }.header-actions, .section-head, article { align-items: flex-start; flex-wrap: wrap; } }
+.field-hint { font-size: 13px; margin-bottom: 8px; } .muted { color: #687077; font-size: 12px; }
+.authorized { display: flex; flex-direction: column; gap: 6px; } .authorized-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #d9dde1; background: #fff; } .authorized-row .muted { display: block; } .authorized-row div { min-width: 0; } .danger { color: #a24a18; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(23, 32, 51, 0.45); display: grid; place-items: center; z-index: 40; }
+.modal { background: #fff; color: #172033; border-radius: 10px; padding: 24px; width: min(420px, calc(100vw - 48px)); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.25); }
+.modal h3 { margin: 0 0 8px; } .modal-device { font-size: 17px; font-weight: 700; margin: 0 0 4px; } .modal .muted { font-size: 13px; margin-bottom: 14px; } .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+:root[data-theme='dark'] .authorized-row { border-color: #3d4a51; background: #202b31; } :root[data-theme='dark'] .modal { background: #202b31; color: #e8edf0; } :root[data-theme='dark'] .modal .muted { color: #b6c1c7; }
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'] .authorized-row { border-color: #3d4a51; background: #202b31; }
+  :root[data-theme='system'] .modal { background: #202b31; color: #e8edf0; }
+  :root[data-theme='system'] .modal .muted { color: #b6c1c7; }
+}
 </style>
