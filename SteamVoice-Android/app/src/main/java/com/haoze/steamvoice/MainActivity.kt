@@ -12,11 +12,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -379,7 +381,15 @@ class SettingsActivity : ComponentActivity() {
 private fun SettingsScreen(settings: AudioSettings, repository: SettingsRepository, trustRepository: PcTrustRepository, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val trustedPcs by trustRepository.trusted.collectAsState(initial = emptyMap())
-    Scaffold(topBar = { Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(end = 16.dp)) { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }; Text("设置", style = MaterialTheme.typography.titleLarge) } }) { padding ->
+    Scaffold(topBar = {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(end = 16.dp),
+        ) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
+            Text("设置", style = MaterialTheme.typography.titleLarge)
+        }
+    }) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
@@ -429,21 +439,24 @@ private fun SettingsScreen(settings: AudioSettings, repository: SettingsReposito
                                     Icon(Icons.Default.Computer, null, tint = MaterialTheme.colorScheme.primary)
                                     Spacer(Modifier.padding(horizontal = 10.dp))
                                     Column(Modifier.weight(1f)) {
-                                        Text(name.ifBlank { id.take(12) }, style = MaterialTheme.typography.titleMedium)
+                                        Text(name.ifBlank { id.take(12) }, style = MaterialTheme.typography.bodyLarge)
                                         Text(id.take(16), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
-                                    OutlinedButton(onClick = { scope.launch { trustRepository.untrust(id) } }) { Text("移除") }
+                                    OutlinedButton(
+                                        onClick = { scope.launch { trustRepository.untrust(id) } },
+                                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                                        modifier = Modifier.heightIn(min = 36.dp),
+                                    ) { Text("移除") }
                                 }
                             }
                         }
                     }
                 }
             }
-            SettingsSection(title = "接收格式", description = null) {
+            SettingsSection(title = "接收格式", description = "本机作为接收端解码播放的音频格式") {
                 ProtocolInfoGroup()
             }
             SettingsSection(title = "关于", description = null) {
-                ProtocolInfoGroup()
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     ProtocolInfoRow("多设备同步", "已启用 · 时钟对齐播放")
                     ProtocolInfoRow("传输协议", "UDP 局域网 · Opus 编码")
@@ -489,7 +502,7 @@ private fun ProtocolInfoRow(title: String, value: String) {
         ) {
             Icon(Icons.Default.GraphicEq, null, tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.padding(horizontal = 12.dp))
-            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
             Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -526,13 +539,13 @@ private fun SettingsGroup(items: List<SettingRowData>) {
 
 @Composable
 private fun SettingOption(item: SettingRowData) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(item.icon, null, tint = if (item.selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.primary)
         Spacer(Modifier.padding(horizontal = 12.dp))
         Column(Modifier.weight(1f)) {
-            Text(item.title, style = MaterialTheme.typography.titleMedium)
+            Text(item.title, style = MaterialTheme.typography.bodyLarge)
             if (item.subtitle != null) {
-                Text(item.subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(item.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         RadioButton(selected = item.selected, onClick = null)

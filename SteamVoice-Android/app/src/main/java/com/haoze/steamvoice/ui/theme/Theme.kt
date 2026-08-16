@@ -1,13 +1,18 @@
 package com.haoze.steamvoice.ui.theme
 
+import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 
-// 与桌面端一致的 SteamVoice 品牌配色；关闭动态取色以保证双端视觉统一。
+// Android 12+ 跟随系统“莫奈取色”（Material You 壁纸动态配色）；
+// 低版本回退到与桌面端一致的 SteamVoice 品牌配色。
 private val DarkColorScheme = darkColorScheme(
     primary = SteamGreenLight,
     onPrimary = InkDark,
@@ -45,10 +50,19 @@ private val LightColorScheme = lightColorScheme(
 @Composable
 fun SteamVoiceTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    dynamicColor: Boolean = true,
     content: @Composable () -> Unit
 ) {
+    val colorScheme = when {
+        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+            val context = LocalContext.current
+            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        }
+        darkTheme -> DarkColorScheme
+        else -> LightColorScheme
+    }
     MaterialTheme(
-        colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme,
+        colorScheme = colorScheme,
         typography = Typography,
         content = content
     )
