@@ -12,6 +12,7 @@ import (
 
 const minBitrate = 48000
 const bitrateStep = 16000
+const connectRequestInterval = 1500 * time.Millisecond
 
 type Sender struct {
 	conn         *net.UDPConn
@@ -24,6 +25,7 @@ type Sender struct {
 	feedbackWG   sync.WaitGroup
 	onBitrate    func(int)
 	lastFeedback time.Time
+	connResult   chan protocol.ConnControl
 }
 
 func NewSender(address string, args ...int) (*Sender, error) {
@@ -49,7 +51,7 @@ func NewSender(address string, args ...int) (*Sender, error) {
 		_ = c.Close()
 		return nil, fmt.Errorf("unsupported frame duration: %d ms", frameMs)
 	}
-	s := &Sender{conn: c, session: binary.BigEndian.Uint32(raw[:]), bitrate: uint32(br), frameMs: uint16(frameMs), feedbackDone: make(chan struct{}), lastFeedback: time.Now()}
+	s := &Sender{conn: c, session: binary.BigEndian.Uint32(raw[:]), bitrate: uint32(br), frameMs: uint16(frameMs), feedbackDone: make(chan struct{}), lastFeedback: time.Now(), connResult: make(chan protocol.ConnControl, 1)}
 	s.feedbackWG.Add(1)
 	go s.feedbackLoop()
 	return s, nil
@@ -74,6 +76,36 @@ func (s *Sender) SendSettings(settings protocol.Settings) error {
 	_, err := s.conn.Write(protocol.EncodeSettings(settings))
 	return err
 }
+
+// RequestConnection asks the receiver for permission to stream, retransmitting
+// the request until it answers or the timeout elapses. A cached answer that
+// raced the first wait is honored too.
+func (s *Sender) RequestConnection(selfID, selfName string, timeout time.Duration) bool {
+	req, err := protocol.EncodeConn(protocol.ConnControl{Kind: protocol.ConnRequest, DeviceID: selfID, Name: selfName})
+	if err != nil {
+		return false
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := s.conn.Write(req); err != nil {
+			return false
+		}
+		wait := connectRequestInterval
+		if remaining := time.Until(deadline); remaining <= 0 {
+			return false
+		} else if remaining < wait {
+			wait = remaining
+		}
+		select {
+		case r := <-s.connResult:
+			return r.Allow
+		case <-s.feedbackDone:
+			return false
+		case <-time.After(wait):
+		}
+	}
+}
+
 func (s *Sender) feedbackLoop() {
 	defer s.feedbackWG.Done()
 	buf := make([]byte, 256)
@@ -85,6 +117,13 @@ func (s *Sender) feedbackLoop() {
 			select {
 			case <-s.feedbackDone:
 				return
+			default:
+			}
+			continue
+		}
+		if c, err := protocol.DecodeConn(buf[:n]); err == nil && c.Kind == protocol.ConnResponse {
+			select {
+			case s.connResult <- c:
 			default:
 			}
 			continue

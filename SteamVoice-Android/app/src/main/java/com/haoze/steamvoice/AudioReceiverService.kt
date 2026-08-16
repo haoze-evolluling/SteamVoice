@@ -2,6 +2,7 @@ package com.haoze.steamvoice
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -15,25 +16,89 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetAddress
 import kotlin.concurrent.thread
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 
 class AudioReceiverService : Service() {
-    private companion object { const val TAG = "SteamVoiceReceiver"; const val MAX_UDP_PACKET = 65535 }
+    private companion object {
+        const val TAG = "SteamVoiceReceiver"; const val MAX_UDP_PACKET = 65535
+        const val AUTH_NOTIFICATION_ID = 9
+        const val PROMPT_EXPIRY_MS = 35_000L
+        const val ACTION_RESPOND = "com.haoze.steamvoice.action.RESPOND"
+        const val EXTRA_REQUEST_ID = "request_id"; const val EXTRA_ALLOW = "allow"; const val EXTRA_REMEMBER = "remember"
+    }
+
     @Volatile private var stopRequested = false
     private var socket: DatagramSocket? = null
     private var worker: Thread? = null
     private var nsd: NsdManager? = null
     private var registration: NsdManager.RegistrationListener? = null
+    private var activePc: ActivePc? = null
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int { Log.i(TAG, "receiver service starting port=${SteamVoiceProtocol.port}"); stopRequested = false; startForeground(8, notification()); registerService(); if (worker?.isAlive != true) worker = thread(name = "steamvoice-udp") { receiveLoop() }; return START_NOT_STICKY }
-    override fun onDestroy() { stopRequested = true; socket?.close(); worker?.interrupt(); registration?.let { nsd?.unregisterService(it) }; stopForeground(STOP_FOREGROUND_REMOVE); super.onDestroy() }
+    /** 仅在接收线程访问：等待用户决定的连接请求。 */
+    private class PromptRecord(val prompt: PcAuthPrompt, val address: InetAddress, val port: Int)
+
+    private val pendingPrompts = HashMap<String, PromptRecord>()
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_RESPOND -> {
+                val requestId = intent.getStringExtra(EXTRA_REQUEST_ID) ?: ""
+                val allow = intent.getBooleanExtra(EXTRA_ALLOW, false)
+                val remember = intent.getBooleanExtra(EXTRA_REMEMBER, false)
+                if (requestId.isNotEmpty()) ConnectionBus.decisions.add(Triple(requestId, allow, remember))
+            }
+        }
+        Log.i(TAG, "receiver service starting port=${SteamVoiceProtocol.port}")
+        stopRequested = false
+        startForeground(8, notification(null))
+        registerService()
+        if (worker?.isAlive != true) worker = thread(name = "steamvoice-udp") { receiveLoop() }
+        return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        stopRequested = true
+        activePc?.let { pc ->
+            // 让电脑端立即断开会话，而不是等反馈超时。
+            try {
+                val bye = ConnControl(ConnControl.KIND_BYE, selfIdBlocking()).encode()
+                socket?.send(DatagramPacket(bye, bye.size, pc.address, SteamVoiceProtocol.desktopControlPort))
+            } catch (_: Exception) {}
+        }
+        ConnectionBus.activePc.value = null
+        ConnectionBus.authPrompt.value = null
+        socket?.close()
+        worker?.interrupt()
+        registration?.let { nsd?.unregisterService(it) }
+        dismissAuthNotification()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        super.onDestroy()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
-    private fun notification() = NotificationCompat.Builder(this, "steamvoice-receiver").setSmallIcon(android.R.drawable.ic_lock_silent_mode_off).setContentTitle(getString(R.string.app_name)).setContentText(getString(R.string.receiver_notification)).setOngoing(true).build().also { val manager=getSystemService(NotificationManager::class.java); manager.createNotificationChannel(NotificationChannel("steamvoice-receiver",getString(R.string.receiver_channel),NotificationManager.IMPORTANCE_LOW)) }
+
+
+    private fun selfIdBlocking(): String = runBlocking { SettingsRepository(applicationContext).settings.first().deviceId }
+
+    private fun notification(pcName: String?) = NotificationCompat.Builder(this, "steamvoice-receiver")
+        .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
+        .setContentTitle(getString(R.string.app_name))
+        .setContentText(if (pcName == null) getString(R.string.receiver_notification) else "正在接收来自 $pcName 的电脑音频")
+        .setOngoing(true)
+        .build()
+        .also {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(NotificationChannel("steamvoice-receiver", getString(R.string.receiver_channel), NotificationManager.IMPORTANCE_LOW))
+        }
+
     private fun registerService() { val settings = runBlocking { SettingsRepository(this@AudioReceiverService).settings.first() }; nsd=getSystemService(Context.NSD_SERVICE) as NsdManager; val friendly=DeviceIdentity.friendlyName(); val info=NsdServiceInfo().apply { serviceName="SteamVoice-$friendly"; serviceType="_steamvoice._udp."; port=SteamVoiceProtocol.port; setAttribute("role", "speaker"); setAttribute("device_id", settings.deviceId); setAttribute("codec", "opus"); setAttribute("sample_rate", SteamVoiceProtocol.sampleRate.toString()); setAttribute("channels", SteamVoiceProtocol.channels.toString()); setAttribute("bitrate", (settings.initialBitrateKbps * 1000).toString()); setAttribute("frame_ms", SteamVoiceProtocol.supportedFrameMilliseconds.joinToString(",")); setAttribute("current_frame_ms", settings.frameMs.toString()); setAttribute("settings_updated_at", settings.updatedAtMs.toString()); setAttribute("settings_device_id", settings.deviceId) }; registration=object:NsdManager.RegistrationListener { override fun onServiceRegistered(i:NsdServiceInfo){ Log.i(TAG,"advertising ${i.serviceName}") }; override fun onRegistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD registration failed: $e") }; override fun onServiceUnregistered(i:NsdServiceInfo){}; override fun onUnregistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD unregistration failed: $e") } }; nsd?.registerService(info,NsdManager.PROTOCOL_DNS_SD,registration) }
+
     private fun receiveLoop() {
         val repository = SettingsRepository(this@AudioReceiverService)
+        val trust = PcTrustRepository(this@AudioReceiverService)
         var settings = runBlocking { repository.settings.first() }
         val track = newTrack()
         val buffer = PacketJitterBuffer(targetPackets = 1)
@@ -41,9 +106,10 @@ class AudioReceiverService : Service() {
         val bytes = ByteArray(MAX_UDP_PACKET)
         var received = 0L
         var decoded = 0L
+        var unauthorizedDrops = 0L
         val decoderHandle = OpusNative.createDecoder(48000, 2)
         check(decoderHandle != 0L) { "native Opus decoder unavailable" }
-        var lastAddress: java.net.InetAddress? = null
+        var lastAddress: InetAddress? = null
         var lastPort = 0
         var activeSession = 0L
         var highest = 0L; var receivedCount = 0L; var lostCount = 0L; var lastFeedback = System.nanoTime()
@@ -52,6 +118,26 @@ class AudioReceiverService : Service() {
         try {
             socket?.soTimeout = 50
             while (!stopRequested && !Thread.currentThread().isInterrupted) {
+                // 采纳连接器登记的发送方（手机主动连接电脑的场景）。
+                ConnectionBus.queuedSender?.let { queued ->
+                    ConnectionBus.queuedSender = null
+                    if (activePc?.deviceId != queued.deviceId) adoptPc(queued)
+                }
+                // 处理用户授权决定。
+                while (true) {
+                    val decision = ConnectionBus.decisions.poll() ?: break
+                    applyDecision(decision)
+                }
+                // 处理用户主动断开。
+                while (true) {
+                    val disconnectId = ConnectionBus.localDisconnects.poll() ?: break
+                    if (activePc?.deviceId == disconnectId) {
+                        activePc = null
+                        ConnectionBus.activePc.value = null
+                        updateForegroundNotification(null)
+                    }
+                }
+                expirePrompts()
                 val datagram = DatagramPacket(bytes, bytes.size)
                 var gotPacket = true
                 try { socket?.receive(datagram) } catch (_: java.net.SocketTimeoutException) { gotPacket = false }
@@ -62,8 +148,12 @@ class AudioReceiverService : Service() {
                     if (runBlocking { repository.applyIfNewer(incoming) }) settings = incoming
                     continue
                 }
-                if (ConnControl.decode(datagram.data, datagram.length) != null) continue
+                val conn = ConnControl.decode(datagram.data, datagram.length)
+                if (conn != null) { handleConnControl(conn, datagram, trust); continue }
                 received++
+                // 音频门控：只播放已授权发送方的数据。
+                val authorized = activePc != null && datagram.address == activePc!!.address
+                if (!authorized) { unauthorizedDrops++; if (unauthorizedDrops % 100 == 1L) Log.w(TAG, "dropping audio from unauthorized ${datagram.address} (total=$unauthorizedDrops)"); continue }
                 val packet = SteamVoiceProtocol.decode(datagram.data, datagram.length)
                 if (packet == null) { Log.w(TAG, "invalid UDP packet length=${datagram.length}"); continue }
                 lastAddress = datagram.address; lastPort = datagram.port
@@ -90,11 +180,112 @@ class AudioReceiverService : Service() {
             if (!stopRequested) Log.e(TAG, "receiver loop stopped", e)
         } finally {
             OpusNative.destroyDecoder(decoderHandle)
-            Log.i(TAG, "receiver stopped received=$received decoded=$decoded")
+            Log.i(TAG, "receiver stopped received=$received decoded=$decoded unauthorized=$unauthorizedDrops")
             track.stop()
             track.release()
         }
     }
-    private fun sendFeedback(address: java.net.InetAddress?, port: Int, session: Long, highest: Long, received: Long, lost: Long, queue: Int, bitrate: Int) { if (address == null || port == 0) return; try { val b=ReceiverFeedback(session, highest, received, lost, queue, bitrate).encode(); socket?.send(DatagramPacket(b,b.size,address,port)) } catch (_: Exception) {} }
+
+    /** 接收线程：处理连接控制报文。 */
+    private fun handleConnControl(conn: ConnControl, datagram: DatagramPacket, trust: PcTrustRepository) {
+        when (conn.kind) {
+            ConnControl.KIND_REQUEST -> {
+                val name = conn.name.ifBlank { conn.deviceId.take(8) }
+                val trusted = runBlocking { trust.isTrusted(conn.deviceId) }
+                if (activePc?.deviceId == conn.deviceId || trusted) {
+                    respondConn(datagram.address, datagram.port, allow = true)
+                    adoptPc(ActivePc(conn.deviceId, name, datagram.address))
+                } else {
+                    val requestId = java.util.UUID.randomUUID().toString().replace("-", "").take(16)
+                    val prompt = PcAuthPrompt(requestId, conn.deviceId, name, datagram.address.hostAddress ?: "", System.currentTimeMillis())
+                    pendingPrompts[requestId] = PromptRecord(prompt, datagram.address, datagram.port)
+                    ConnectionBus.authPrompt.value = prompt
+                    postAuthNotification(prompt)
+                }
+            }
+            ConnControl.KIND_BYE -> {
+                if (activePc?.deviceId == conn.deviceId) {
+                    val gone = activePc
+                    activePc = null
+                    ConnectionBus.activePc.value = null
+                    updateForegroundNotification(null)
+                    ConnectionBus.notify("${gone?.name ?: "电脑"} 已断开连接")
+                }
+            }
+            ConnControl.KIND_RESPONSE -> {} // 响应发给发起连接的临时 socket，不会到这里
+        }
+    }
+
+    private fun applyDecision(decision: Triple<String, Boolean, Boolean>) {
+        val record = pendingPrompts.remove(decision.first) ?: return
+        ConnectionBus.authPrompt.value = null
+        dismissAuthNotification()
+        respondConn(record.address, record.port, decision.second)
+        if (decision.second) {
+            if (decision.third) runBlocking { PcTrustRepository(applicationContext).trust(record.prompt.deviceId, record.prompt.name) }
+            adoptPc(ActivePc(record.prompt.deviceId, record.prompt.name, record.address))
+        }
+    }
+
+    private fun expirePrompts() {
+        if (pendingPrompts.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val expired = pendingPrompts.values.filter { now - it.prompt.createdAtMs > PROMPT_EXPIRY_MS }
+        for (record in expired) pendingPrompts.remove(record.prompt.requestId)
+        if (expired.isNotEmpty()) {
+            ConnectionBus.authPrompt.value = null
+            dismissAuthNotification()
+        }
+    }
+
+    private fun adoptPc(pc: ActivePc) {
+        activePc = pc
+        ConnectionBus.activePc.value = pc
+        updateForegroundNotification(pc.name)
+        ConnectionBus.notify("已连接 ${pc.name}")
+    }
+
+    private fun respondConn(address: InetAddress, port: Int, allow: Boolean) {
+        try {
+            val selfId = runBlocking { SettingsRepository(applicationContext).settings.first().deviceId }
+            val response = ConnControl(ConnControl.KIND_RESPONSE, selfId, allow = allow).encode()
+            socket?.send(DatagramPacket(response, response.size, address, port))
+        } catch (e: Exception) {
+            Log.w(TAG, "respond conn failed: ${e.message}")
+        }
+    }
+
+    private fun respondIntent(prompt: PcAuthPrompt, allow: Boolean, remember: Boolean): PendingIntent {
+        val intent = Intent(this, AudioReceiverService::class.java).setAction(ACTION_RESPOND)
+            .putExtra(EXTRA_REQUEST_ID, prompt.requestId)
+            .putExtra(EXTRA_ALLOW, allow)
+            .putExtra(EXTRA_REMEMBER, remember)
+        return PendingIntent.getService(this, (prompt.requestId + allow + remember).hashCode(), intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    }
+
+    private fun postAuthNotification(prompt: PcAuthPrompt) {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(NotificationChannel("steamvoice-auth", "连接请求", NotificationManager.IMPORTANCE_HIGH))
+        val notification = NotificationCompat.Builder(this, "steamvoice-auth")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("连接请求")
+            .setContentText("${prompt.name} 想要把电脑音频推送到本机播放")
+            .setAutoCancel(true)
+            .addAction(0, "拒绝", respondIntent(prompt, false, false))
+            .addAction(0, "允许", respondIntent(prompt, true, false))
+            .addAction(0, "总是允许", respondIntent(prompt, true, true))
+            .build()
+        manager.notify(AUTH_NOTIFICATION_ID, notification)
+    }
+
+    private fun dismissAuthNotification() {
+        getSystemService(NotificationManager::class.java).cancel(AUTH_NOTIFICATION_ID)
+    }
+
+    private fun updateForegroundNotification(pcName: String?) {
+        runCatching { getSystemService(NotificationManager::class.java).notify(8, notification(pcName)) }
+    }
+
+    private fun sendFeedback(address: InetAddress?, port: Int, session: Long, highest: Long, received: Long, lost: Long, queue: Int, bitrate: Int) { if (address == null || port == 0) return; try { val b=ReceiverFeedback(session, highest, received, lost, queue, bitrate).encode(); socket?.send(DatagramPacket(b,b.size,address,port)) } catch (_: Exception) {} }
     private fun newTrack(): AudioTrack { val min=AudioTrack.getMinBufferSize(48000,AudioFormat.CHANNEL_OUT_STEREO,AudioFormat.ENCODING_PCM_16BIT); check(min > 0) { "AudioTrack buffer size unavailable: $min" }; return AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build()).setAudioFormat(AudioFormat.Builder().setSampleRate(48000).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build()).setBufferSizeInBytes(min * 2).setTransferMode(AudioTrack.MODE_STREAM).build().also { it.play(); Log.i(TAG,"AudioTrack started buffer=$min configured=${min * 2} state=${it.state}") } }
 }

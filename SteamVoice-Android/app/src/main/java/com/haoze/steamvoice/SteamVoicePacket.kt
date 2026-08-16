@@ -57,6 +57,7 @@ object SteamVoiceProtocol {
     const val channels = 2
     const val frameMilliseconds = 10
     val supportedFrameMilliseconds = setOf(10, 20)
+    const val desktopControlPort = 40126
     private const val headerSize = 32
     fun decode(data: ByteArray, length: Int): SteamVoicePacket? {
         if (length < headerSize || data.copyOfRange(0, 4).decodeToString() != "SV01" || data[4].toInt() != version || data[5].toInt() != codecOpus) return null

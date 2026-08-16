@@ -32,7 +32,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -122,6 +125,12 @@ class MainActivity : ComponentActivity() {
         val requestId = selfId
         Thread {
             val result = connector.request(pc, requestId, selfName)
+            if (result is PcConnector.ConnectResult.Accepted) {
+                // 电脑同意后登记发送方，接收循环据此放行音频。
+                runCatching {
+                    ConnectionBus.queuedSender = ActivePc(pc.deviceId, pc.name, java.net.InetAddress.getByName(pc.host))
+                }
+            }
             runOnUiThread { onDone(result) }
         }.start()
     }
@@ -129,6 +138,7 @@ class MainActivity : ComponentActivity() {
     private fun disconnectFromPc(pc: PcDevice) {
         if (selfId.isEmpty()) return
         val requestId = selfId
+        ConnectionBus.localDisconnects.add(pc.deviceId)
         Thread { connector.bye(pc, requestId) }.start()
     }
 }
@@ -145,9 +155,14 @@ private fun ReceiverScreen(
     onSettings: () -> Unit,
 ) {
     val devices by discovery.devices.collectAsState()
+    val activePc by ConnectionBus.activePc.collectAsState()
+    val authPrompt by ConnectionBus.authPrompt.collectAsState()
     val pcStates = remember { mutableStateMapOf<String, PcConnectionState>() }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) {
+        ConnectionBus.messages.collect { scope.launch { snackbar.showSnackbar(it) } }
+    }
     LaunchedEffect(devices) {
         // 掉线的电脑从列表移除后，同步清理其连接状态。
         val online = devices.map { it.deviceId }.toSet()
@@ -187,27 +202,29 @@ private fun ReceiverScreen(
                     )
                 }
                 items(devices, key = { it.deviceId }) { pc ->
+                    // 实际连接状态以接收服务的活动发送方为准。
+                    val effective = if (activePc?.deviceId == pc.deviceId) PcConnectionState.CONNECTED else pcStates[pc.deviceId] ?: PcConnectionState.ONLINE
                     PcCard(
                         pc = pc,
-                        state = pcStates[pc.deviceId] ?: PcConnectionState.ONLINE,
+                        state = effective,
                         onConnect = {
                             pcStates[pc.deviceId] = PcConnectionState.CONNECTING
                             onConnect(pc) { result ->
                                 when (result) {
-                                    is PcConnector.ConnectResult.Accepted -> pcStates[pc.deviceId] = PcConnectionState.CONNECTED
+                                    is PcConnector.ConnectResult.Accepted -> pcStates.remove(pc.deviceId)
                                     is PcConnector.ConnectResult.Denied -> {
-                                        pcStates[pc.deviceId] = PcConnectionState.ONLINE
+                                        pcStates.remove(pc.deviceId)
                                         scope.launch { snackbar.showSnackbar("电脑端拒绝了连接请求") }
                                     }
                                     is PcConnector.ConnectResult.Timeout -> {
-                                        pcStates[pc.deviceId] = PcConnectionState.ONLINE
+                                        pcStates.remove(pc.deviceId)
                                         scope.launch { snackbar.showSnackbar("无法连接 ${pc.name}，请确认电脑端正在运行") }
                                     }
                                 }
                             }
                         },
                         onDisconnect = {
-                            pcStates[pc.deviceId] = PcConnectionState.ONLINE
+                            pcStates.remove(pc.deviceId)
                             onDisconnect(pc)
                         },
                     )
@@ -215,6 +232,37 @@ private fun ReceiverScreen(
             }
         }
     }
+
+    authPrompt?.let { prompt ->
+        PcAuthDialog(
+            prompt = prompt,
+            onRespond = { allow, remember ->
+                ConnectionBus.decisions.add(Triple(prompt.requestId, allow, remember))
+            },
+        )
+    }
+}
+
+@Composable
+private fun PcAuthDialog(prompt: PcAuthPrompt, onRespond: (allow: Boolean, remember: Boolean) -> Unit) {
+    var remember by remember { mutableStateOf(true) }
+    AlertDialog(
+        onDismissRequest = { onRespond(false, false) },
+        title = { Text("连接请求") },
+        text = {
+            Column {
+                Text("${prompt.name} 想要把电脑音频推送到本机播放。", style = MaterialTheme.typography.bodyMedium)
+                Text(prompt.host, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(14.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = remember, onCheckedChange = { remember = it })
+                    Text("以后自动同意该设备", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onRespond(true, remember) }) { Text("允许") } },
+        dismissButton = { TextButton(onClick = { onRespond(false, false) }) { Text("拒绝") } },
+    )
 }
 
 @Composable
@@ -292,24 +340,22 @@ class SettingsActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val repository = SettingsRepository(applicationContext)
-        val receiverRunning = intent.getBooleanExtra("receiver_running", false)
+        val trustRepository = PcTrustRepository(applicationContext)
         setContent {
             SteamVoiceTheme {
                 val settings by repository.settings.collectAsState(initial = AudioSettings())
-                SettingsScreen(settings, repository, {
-                    if (receiverRunning) {
-                        stopService(Intent(this, AudioReceiverService::class.java))
-                        ContextCompat.startForegroundService(this, Intent(this, AudioReceiverService::class.java))
-                    }
-                }) { finish() }
+                // 音频参数只影响下一次连接协商，不需要重启接收服务
+                // （重启会断开正在进行的连接）。
+                SettingsScreen(settings, repository, trustRepository) { finish() }
             }
         }
     }
 }
 
 @Composable
-private fun SettingsScreen(settings: AudioSettings, repository: SettingsRepository, restart: () -> Unit, onBack: () -> Unit) {
+private fun SettingsScreen(settings: AudioSettings, repository: SettingsRepository, trustRepository: PcTrustRepository, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val trustedPcs by trustRepository.trusted.collectAsState(initial = emptyMap())
     Scaffold(topBar = { Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().statusBarsPadding()) { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }; Text("设置", style = MaterialTheme.typography.titleLarge) } }) { padding ->
         Column(
             Modifier
@@ -329,7 +375,7 @@ private fun SettingsScreen(settings: AudioSettings, repository: SettingsReposito
                         Icons.Default.GraphicEq,
                         bitrate == settings.initialBitrateKbps,
                     ) {
-                        scope.launch { repository.setInitialBitrate(bitrate); restart() }
+                        scope.launch { repository.setInitialBitrate(bitrate) }
                     }
                 }
             )
@@ -338,9 +384,45 @@ private fun SettingsScreen(settings: AudioSettings, repository: SettingsReposito
             Spacer(Modifier.height(10.dp))
             SettingsGroup(items = listOf(10, 20).map { frame ->
                 SettingRowData("$frame ms", "电脑端连接时使用的音频帧长", Icons.Default.GraphicEq, frame == settings.frameMs) {
-                    scope.launch { repository.setFrameMs(frame); restart() }
+                    scope.launch { repository.setFrameMs(frame) }
                 }
             })
+            Spacer(Modifier.height(28.dp))
+            Text("已授权电脑", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "以下电脑连接本机时无需再次确认",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            if (trustedPcs.isEmpty()) {
+                Text(
+                    "暂无已授权电脑。电脑主动连接时，可以选择“以后自动同意该设备”。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    trustedPcs.forEach { (id, name) ->
+                        Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(Icons.Default.Computer, null, tint = MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.padding(horizontal = 10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(name.ifBlank { id.take(12) }, style = MaterialTheme.typography.titleMedium)
+                                    Text(id.take(16), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                OutlinedButton(onClick = { scope.launch { trustRepository.untrust(id) } }) { Text("移除") }
+                            }
+                        }
+                    }
+                }
+            }
             Spacer(Modifier.height(28.dp))
             Text("接收格式", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(10.dp))

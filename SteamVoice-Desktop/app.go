@@ -77,6 +77,10 @@ const feedbackStaleAfter = 3 * time.Second
 // before the desktop gives up and cancels it.
 const requestExpiry = 30 * time.Second
 
+// authorizationTimeout is how long Connect waits for the receiver to approve
+// streaming before giving up (the user may need time to tap the prompt).
+const authorizationTimeout = 30 * time.Second
+
 type deviceSession struct {
 	device  Device
 	sender  *stream.Sender
@@ -245,6 +249,12 @@ func (a *App) Connect(device Device) error {
 	sender, err := stream.NewSender(fmt.Sprintf("%s:%d", device.Host, device.Port), bitrate, frameMs)
 	if err != nil {
 		return err
+	}
+	// The receiver decides whether this desktop may stream; inbound-initiated
+	// sessions re-confirm instantly because the receiver started them.
+	if !sender.RequestConnection(a.store.DeviceID, a.pcName(), authorizationTimeout) {
+		_ = sender.Close()
+		return fmt.Errorf("接收端未同意连接（对方拒绝了请求、长时间未确认或版本过旧）")
 	}
 	encoder, err := codec.NewOpusEncoder(bitrate, frameMs)
 	if err != nil {
