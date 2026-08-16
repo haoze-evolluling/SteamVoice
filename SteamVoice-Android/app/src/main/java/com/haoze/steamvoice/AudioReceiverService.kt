@@ -96,7 +96,11 @@ class AudioReceiverService : Service() {
             manager.createNotificationChannel(NotificationChannel("steamvoice-receiver", getString(R.string.receiver_channel), NotificationManager.IMPORTANCE_LOW))
         }
 
-    private fun registerService() { val settings = runBlocking { SettingsRepository(this@AudioReceiverService).settings.first() }; nsd=getSystemService(Context.NSD_SERVICE) as NsdManager; val friendly=DeviceIdentity.friendlyName(); val info=NsdServiceInfo().apply { serviceName="SteamVoice-$friendly"; serviceType="_steamvoice._udp."; port=SteamVoiceProtocol.port; setAttribute("role", "speaker"); setAttribute("device_id", settings.deviceId); setAttribute("codec", "opus"); setAttribute("sample_rate", SteamVoiceProtocol.sampleRate.toString()); setAttribute("channels", SteamVoiceProtocol.channels.toString()); setAttribute("bitrate", (settings.initialBitrateKbps * 1000).toString()); setAttribute("frame_ms", SteamVoiceProtocol.supportedFrameMilliseconds.joinToString(",")); setAttribute("current_frame_ms", settings.frameMs.toString()); setAttribute("settings_updated_at", settings.updatedAtMs.toString()); setAttribute("settings_device_id", settings.deviceId) }; registration=object:NsdManager.RegistrationListener { override fun onServiceRegistered(i:NsdServiceInfo){ Log.i(TAG,"advertising ${i.serviceName}") }; override fun onRegistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD registration failed: $e") }; override fun onServiceUnregistered(i:NsdServiceInfo){}; override fun onUnregistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD unregistration failed: $e") } }; nsd?.registerService(info,NsdManager.PROTOCOL_DNS_SD,registration) }
+    private fun registerService() {
+        // onStartCommand 在每次前台服务被拉起时都会触发（例如发起连接前的
+        // ensureReceiverRunning）；重复注册同名服务会与自身记录冲突导致广播异常。
+        if (registration != null) return
+        val settings = runBlocking { SettingsRepository(this@AudioReceiverService).settings.first() }; nsd=getSystemService(Context.NSD_SERVICE) as NsdManager; val friendly=DeviceIdentity.friendlyName(); val info=NsdServiceInfo().apply { serviceName="SteamVoice-$friendly"; serviceType="_steamvoice._udp."; port=SteamVoiceProtocol.port; setAttribute("role", "speaker"); setAttribute("device_id", settings.deviceId); setAttribute("codec", "opus"); setAttribute("sample_rate", SteamVoiceProtocol.sampleRate.toString()); setAttribute("channels", SteamVoiceProtocol.channels.toString()); setAttribute("bitrate", (settings.initialBitrateKbps * 1000).toString()); setAttribute("frame_ms", SteamVoiceProtocol.supportedFrameMilliseconds.joinToString(",")); setAttribute("current_frame_ms", settings.frameMs.toString()); setAttribute("settings_updated_at", settings.updatedAtMs.toString()); setAttribute("settings_device_id", settings.deviceId) }; registration=object:NsdManager.RegistrationListener { override fun onServiceRegistered(i:NsdServiceInfo){ Log.i(TAG,"advertising ${i.serviceName}") }; override fun onRegistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD registration failed: $e"); registration = null }; override fun onServiceUnregistered(i:NsdServiceInfo){ registration = null }; override fun onUnregistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD unregistration failed: $e") } }; nsd?.registerService(info,NsdManager.PROTOCOL_DNS_SD,registration) }
 
     private fun receiveLoop() {
         val repository = SettingsRepository(this@AudioReceiverService)
@@ -177,9 +181,16 @@ class AudioReceiverService : Service() {
                         activePc = null
                         ConnectionBus.activePc.value = null
                         updateForegroundNotification(null)
+                        // 通知电脑端立即 teardown，避免两端连接状态不一致。
+                        gone?.let { pc ->
+                            runCatching {
+                                val bye = ConnControl(ConnControl.KIND_BYE, selfIdBlocking()).encode()
+                                socket?.send(DatagramPacket(bye, bye.size, pc.address, SteamVoiceProtocol.desktopControlPort))
+                            }
+                        }
                         ConnectionBus.notify("${gone?.name ?: "电脑"} 连接已中断")
                     }
-                    if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate); lastFeedback = System.nanoTime() }
+                    if (activePc != null && System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate); lastFeedback = System.nanoTime() }
                     continue
                 }
                 val control = SettingsControl.decode(datagram.data, datagram.length)
@@ -295,8 +306,12 @@ class AudioReceiverService : Service() {
         val expired = pendingPrompts.values.filter { now - it.prompt.createdAtMs > PROMPT_EXPIRY_MS }
         for (record in expired) pendingPrompts.remove(record.prompt.requestId)
         if (expired.isNotEmpty()) {
-            ConnectionBus.authPrompt.value = null
-            dismissAuthNotification()
+            // 只清理确实过期的请求；重传产生的新请求弹窗不能被旧记录的过期连带关闭。
+            val current = ConnectionBus.authPrompt.value
+            if (current == null || expired.any { it.prompt.requestId == current.requestId }) {
+                ConnectionBus.authPrompt.value = null
+                dismissAuthNotification()
+            }
         }
     }
 

@@ -113,6 +113,11 @@ onMounted(async () => {
     if (!connectedCount.value) status.value = statusMessage(value, status.value);
   } catch { status.value = '无法获取连接状态'; }
   EventsOn('device:found', (raw: any) => { const device = normalizeDevice(raw); if (device.updatedAtMs && newer(device, settings.value)) { settings.value = { ...settings.value, bitrate: device.bitrate, frameMs: device.frameMs, updatedAtMs: device.updatedAtMs, deviceId: device.settingsDeviceId || settings.value.deviceId }; } const index = devices.value.findIndex((item) => item.id === device.id); if (index >= 0) devices.value[index] = device; else devices.value.push(device); });
+  EventsOn('device:lost', (raw: any) => {
+    const id = String(raw ?? '');
+    if (!id || connected.value[id]) return;
+    devices.value = devices.value.filter((item) => item.id !== id);
+  });
   EventsOn('stream:status', (raw: any) => {
     const value = normalizeDeviceStatus(raw);
     if (!value.deviceId) return;

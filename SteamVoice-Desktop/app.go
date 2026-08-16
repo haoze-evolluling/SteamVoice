@@ -74,15 +74,23 @@ type Identity struct {
 const feedbackStaleAfter = 3 * time.Second
 
 // requestExpiry is how long an unanswered authorization prompt stays alive
-// before the desktop gives up and cancels it.
-const requestExpiry = 30 * time.Second
+// before the desktop gives up and cancels it; it matches the receiver-side
+// prompt lifetime so a late approval still has a matching desktop request.
+const requestExpiry = 36 * time.Second
+
+// keepaliveIdle is how long without capture data before the sender pads the
+// stream with encoded silence. WASAPI loopback delivers nothing while the
+// system plays no sound, and receivers hang up after ten seconds of silence;
+// keep-alive frames keep every session alive across quiet passages.
+const keepaliveIdle = 40 * time.Millisecond
 
 // feedbackDropAfter is how long without feedback a session is considered gone
 // and is cleaned up automatically.
 const feedbackDropAfter = 30 * time.Second
 
-// streaming before giving up (the user may need time to tap the prompt).
-const authorizationTimeout = 30 * time.Second
+// streaming before giving up. It deliberately outlives the receiver's 35 s
+// prompt expiry so a late approval still completes the handshake.
+const authorizationTimeout = 36 * time.Second
 
 type deviceSession struct {
 	device  Device
@@ -116,6 +124,7 @@ type App struct {
 	localBitrate    int
 	localFrameMs    int
 	clockAnchor     time.Time
+	lastPCM         time.Time
 }
 
 // streamClock maps "now" into the audio timestamp timebase: nanoseconds
@@ -171,6 +180,7 @@ func (a *App) Startup(ctx context.Context) {
 		a.advertiser = advertiser
 	}
 	go a.monitorLoop(ctx)
+	go a.keepaliveLoop(ctx)
 }
 
 func (a *App) pcName() string {
@@ -215,12 +225,14 @@ func (a *App) DiscoverDevices() ([]Device, error) {
 	if a.discoverer != nil {
 		a.discoverer.Close()
 	}
-	b, err := discovery.NewBrowser(func(d discovery.Device) {
-		runtime.EventsEmit(a.ctx, "device:found", Device{Name: d.Name, Host: d.Host, Port: d.Port, ID: d.ID, Codec: d.Codec, SampleRate: d.SampleRate, Channels: d.Channels, Bitrate: d.Bitrate, FrameMs: d.FrameMs, SupportedFrameMs: d.SupportedFrameMs, UpdatedAtMs: d.UpdatedAtMs, SettingsDeviceID: d.SettingsDeviceID})
-	})
-	if err != nil {
-		return nil, err
-	}
+	b := discovery.NewBrowser(
+		func(d discovery.Device) {
+			runtime.EventsEmit(a.ctx, "device:found", Device{Name: d.Name, Host: d.Host, Port: d.Port, ID: d.ID, Codec: d.Codec, SampleRate: d.SampleRate, Channels: d.Channels, Bitrate: d.Bitrate, FrameMs: d.FrameMs, SupportedFrameMs: d.SupportedFrameMs, UpdatedAtMs: d.UpdatedAtMs, SettingsDeviceID: d.SettingsDeviceID})
+		},
+		func(deviceID string) {
+			runtime.EventsEmit(a.ctx, "device:lost", deviceID)
+		},
+	)
 	a.discoverer = b
 	return nil, b.Start(a.ctx)
 }
@@ -476,6 +488,11 @@ func (a *App) onConnRequest(peer gateway.Peer) {
 		if old, ok := a.pending[oldID]; ok {
 			old.timer.Stop()
 			delete(a.pending, oldID)
+			// Retransmissions from the phone replace the pending request;
+			// tell the frontend to drop the superseded modal entry too.
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "conn:cancelled", oldID)
+			}
 		}
 	}
 	requestID := newRequestID()
@@ -538,6 +555,7 @@ func newRequestID() string {
 // clock even across silent gaps where no frames are produced.
 func (a *App) onPCM(pcm []byte) {
 	a.mu.Lock()
+	a.lastPCM = time.Now()
 	anchor := a.clockAnchor
 	sessions := make([]*deviceSession, 0, len(a.sessions))
 	for _, s := range a.sessions {
@@ -548,6 +566,12 @@ func (a *App) onPCM(pcm []byte) {
 		return
 	}
 	tsNs := uint64(time.Since(anchor))
+	a.sendFrame(sessions, tsNs, pcm)
+}
+
+// sendFrame encodes and delivers one PCM frame (real or synthetic silence) to
+// every session, stamped with its stream-clock capture time.
+func (a *App) sendFrame(sessions []*deviceSession, tsNs uint64, pcm []byte) {
 	for _, s := range sessions {
 		encoded, err := s.encoder.EncodePCM(pcm)
 		if err == nil {
@@ -556,6 +580,48 @@ func (a *App) onPCM(pcm []byte) {
 		if err != nil {
 			log.Printf("audio UDP send to %s failed: %v", s.device.Name, err)
 		}
+	}
+}
+
+// keepaliveLoop bridges WASAPI loopback's silent idle periods: while sessions
+// exist but the capture device produces no data, it feeds Opus-encoded silence
+// at the active frame cadence so receivers never hit their audio-silence
+// timeout and both ends keep reporting a live connection.
+func (a *App) keepaliveLoop(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	var lastKeepalive time.Time
+	silence := map[int][]byte{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		a.mu.Lock()
+		frameMs := a.frameMs
+		anchor := a.clockAnchor
+		idle := time.Since(a.lastPCM)
+		sessions := make([]*deviceSession, 0, len(a.sessions))
+		for _, s := range a.sessions {
+			sessions = append(sessions, s)
+		}
+		a.mu.Unlock()
+		if frameMs == 0 || anchor.IsZero() || len(sessions) == 0 {
+			lastKeepalive = time.Time{}
+			continue
+		}
+		frameDuration := time.Duration(frameMs) * time.Millisecond
+		if idle <= keepaliveIdle || (!lastKeepalive.IsZero() && time.Since(lastKeepalive) < frameDuration) {
+			continue
+		}
+		frame, ok := silence[frameMs]
+		if !ok {
+			frame = make([]byte, 480*frameMs/10*2*2)
+			silence[frameMs] = frame
+		}
+		lastKeepalive = time.Now()
+		a.sendFrame(sessions, uint64(time.Since(anchor)), frame)
 	}
 }
 
