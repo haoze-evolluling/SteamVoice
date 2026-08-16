@@ -117,3 +117,19 @@ func TestCheckStaleSessionsFlagsSilentReceiver(t *testing.T) {
 		t.Fatalf("stable session re-reported: %+v", again)
 	}
 }
+
+func TestCheckStaleSessionsDropsLongSilentReceiver(t *testing.T) {
+	a := NewApp()
+	a.staleAfter = 10 * time.Millisecond
+	a.dropAfter = 40 * time.Millisecond
+	session := newTestSession(t, "phone-a", "Pixel")
+	a.sessions["phone-a"] = session
+	time.Sleep(60 * time.Millisecond)
+	updated := a.checkStaleSessions()
+	if a.GetStatus().ConnectedCount != 0 {
+		t.Fatal("long-silent receiver must be dropped")
+	}
+	if len(updated) != 1 || !strings.Contains(updated[0].Message, "已断开") {
+		t.Fatalf("updated = %+v, want drop status", updated)
+	}
+}

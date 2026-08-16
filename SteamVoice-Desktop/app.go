@@ -77,7 +77,10 @@ const feedbackStaleAfter = 3 * time.Second
 // before the desktop gives up and cancels it.
 const requestExpiry = 30 * time.Second
 
-// authorizationTimeout is how long Connect waits for the receiver to approve
+// feedbackDropAfter is how long without feedback a session is considered gone
+// and is cleaned up automatically.
+const feedbackDropAfter = 30 * time.Second
+
 // streaming before giving up (the user may need time to tap the prompt).
 const authorizationTimeout = 30 * time.Second
 
@@ -104,6 +107,7 @@ type App struct {
 	capture         *capture.Loopback
 	frameMs         int
 	staleAfter      time.Duration
+	dropAfter       time.Duration
 	requestTimeout  time.Duration
 	store           *config.File
 	listener        *gateway.Listener
@@ -145,7 +149,7 @@ func NewApp() *App {
 // NewAppWithStore wires an explicit identity/trust store; tests use it to
 // avoid touching the real config file.
 func NewAppWithStore(store *config.File) *App {
-	return &App{sessions: map[string]*deviceSession{}, staleAfter: feedbackStaleAfter, requestTimeout: requestExpiry, pending: map[string]*pendingRequest{}, pendingByDevice: map[string]string{}, localBitrate: 128000, localFrameMs: 10, store: store}
+	return &App{sessions: map[string]*deviceSession{}, staleAfter: feedbackStaleAfter, dropAfter: feedbackDropAfter, requestTimeout: requestExpiry, pending: map[string]*pendingRequest{}, pendingByDevice: map[string]string{}, localBitrate: 128000, localFrameMs: 10, store: store}
 }
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
@@ -572,13 +576,20 @@ func (a *App) monitorLoop(ctx context.Context) {
 }
 
 // checkStaleSessions toggles the unresponsive flag of every session whose
-// receiver feedback went silent or resumed, returning the changed statuses.
+// receiver feedback went silent or resumed, and drops sessions that stayed
+// silent long enough to be considered gone, returning the changed statuses.
 func (a *App) checkStaleSessions() []DeviceStatus {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	var updated []DeviceStatus
-	for _, s := range a.sessions {
-		stale := s.sender.FeedbackIdle() > a.staleAfter
+	var dropped []*deviceSession
+	for id, s := range a.sessions {
+		idle := s.sender.FeedbackIdle()
+		if idle > a.dropAfter {
+			delete(a.sessions, id)
+			dropped = append(dropped, s)
+			continue
+		}
+		stale := idle > a.staleAfter
 		if stale == s.stale {
 			continue
 		}
@@ -589,6 +600,22 @@ func (a *App) checkStaleSessions() []DeviceStatus {
 			s.status.Message = "正在传输系统音频"
 		}
 		updated = append(updated, s.status)
+	}
+	var c *capture.Loopback
+	if len(dropped) > 0 && len(a.sessions) == 0 {
+		c = a.capture
+		a.capture = nil
+		a.frameMs = 0
+		a.clockAnchor = time.Time{}
+	}
+	a.mu.Unlock()
+	if c != nil {
+		c.Close()
+	}
+	for _, s := range dropped {
+		_ = s.sender.SendBye(a.store.DeviceID)
+		_ = s.sender.Close()
+		updated = append(updated, DeviceStatus{DeviceID: s.device.ID, Name: s.device.Name, Message: "接收端长时间无响应，已断开"})
 	}
 	return updated
 }

@@ -328,10 +328,17 @@ class AudioReceiverService : Service() {
     private fun postAuthNotification(prompt: PcAuthPrompt) {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("steamvoice-auth", "连接请求", NotificationManager.IMPORTANCE_HIGH))
+        val openApp = PendingIntent.getActivity(
+            this,
+            prompt.requestId.hashCode(),
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         val notification = NotificationCompat.Builder(this, "steamvoice-auth")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("连接请求")
             .setContentText("${prompt.name} 想要把电脑音频推送到本机播放")
+            .setContentIntent(openApp)
             .setAutoCancel(true)
             .addAction(0, "拒绝", respondIntent(prompt, false, false))
             .addAction(0, "允许", respondIntent(prompt, true, false))
