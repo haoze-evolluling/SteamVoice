@@ -62,6 +62,7 @@ export namespace main {
 	    Message: string;
 	    Bitrate: number;
 	    FrameMs: number;
+	    Phase: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new DeviceStatus(source);
@@ -75,6 +76,7 @@ export namespace main {
 	        this.Message = source["Message"];
 	        this.Bitrate = source["Bitrate"];
 	        this.FrameMs = source["FrameMs"];
+	        this.Phase = source["Phase"];
 	    }
 	}
 	export class Identity {
