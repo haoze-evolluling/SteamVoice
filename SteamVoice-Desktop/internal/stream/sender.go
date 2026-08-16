@@ -20,8 +20,10 @@ type Sender struct {
 	frameMs      uint16
 	mu           sync.Mutex
 	feedbackDone chan struct{}
+	closeOnce    sync.Once
 	feedbackWG   sync.WaitGroup
 	onBitrate    func(int)
+	lastFeedback time.Time
 }
 
 func NewSender(address string, args ...int) (*Sender, error) {
@@ -47,13 +49,24 @@ func NewSender(address string, args ...int) (*Sender, error) {
 		_ = c.Close()
 		return nil, fmt.Errorf("unsupported frame duration: %d ms", frameMs)
 	}
-	s := &Sender{conn: c, session: binary.BigEndian.Uint32(raw[:]), bitrate: uint32(br), frameMs: uint16(frameMs), feedbackDone: make(chan struct{})}
+	s := &Sender{conn: c, session: binary.BigEndian.Uint32(raw[:]), bitrate: uint32(br), frameMs: uint16(frameMs), feedbackDone: make(chan struct{}), lastFeedback: time.Now()}
 	s.feedbackWG.Add(1)
 	go s.feedbackLoop()
 	return s, nil
 }
 
 func (s *Sender) SetBitrateCallback(fn func(int)) { s.mu.Lock(); s.onBitrate = fn; s.mu.Unlock() }
+
+// FeedbackIdle reports how long ago the last valid receiver feedback arrived,
+// counted from sender creation when no feedback has been received yet.
+func (s *Sender) FeedbackIdle() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return time.Since(s.lastFeedback)
+}
+
+// LocalAddr reports the UDP source address feedback should be sent to.
+func (s *Sender) LocalAddr() net.Addr { return s.conn.LocalAddr() }
 
 func (s *Sender) SendSettings(settings protocol.Settings) error {
 	s.mu.Lock()
@@ -81,6 +94,7 @@ func (s *Sender) feedbackLoop() {
 			continue
 		}
 		s.mu.Lock()
+		s.lastFeedback = time.Now()
 		cur := int(s.bitrate)
 		loss := float64(f.Lost) / float64(max32(f.Received+f.Lost, 1))
 		next := cur
@@ -151,8 +165,10 @@ func (s *Sender) SendPCM(pcm []byte) error {
 }
 
 func (s *Sender) Close() error {
-	close(s.feedbackDone)
-	_ = s.conn.Close()
+	s.closeOnce.Do(func() {
+		close(s.feedbackDone)
+		_ = s.conn.Close()
+	})
 	s.feedbackWG.Wait()
 	return nil
 }

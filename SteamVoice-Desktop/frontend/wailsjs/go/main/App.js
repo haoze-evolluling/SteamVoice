@@ -6,8 +6,8 @@ export function Connect(arg1) {
   return window['go']['main']['App']['Connect'](arg1);
 }
 
-export function Disconnect() {
-  return window['go']['main']['App']['Disconnect']();
+export function Disconnect(arg1) {
+  return window['go']['main']['App']['Disconnect'](arg1);
 }
 
 export function DiscoverDevices() {

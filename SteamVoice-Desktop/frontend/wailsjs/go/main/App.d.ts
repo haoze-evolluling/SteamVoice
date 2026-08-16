@@ -4,7 +4,7 @@ import {main} from '../models';
 
 export function Connect(arg1:main.Device):Promise<void>;
 
-export function Disconnect():Promise<void>;
+export function Disconnect(arg1:string):Promise<void>;
 
 export function DiscoverDevices():Promise<Array<main.Device>>;
 

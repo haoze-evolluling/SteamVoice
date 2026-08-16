@@ -68,3 +68,43 @@ func TestSenderSendsPCMCodec(t *testing.T) {
 		t.Fatalf("header=%+v payload=%v", h, payload)
 	}
 }
+
+func TestFeedbackIdleResetsOnFeedback(t *testing.T) {
+	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	sender, err := NewSender(listener.LocalAddr().String(), 128000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	if err = sender.SendOpus([]byte{0xf8, 0xff}); err != nil {
+		t.Fatal(err)
+	}
+	_ = listener.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 256)
+	n, _, err := listener.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _, err := protocol.Decode(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if idle := sender.FeedbackIdle(); idle < 50*time.Millisecond {
+		t.Fatalf("idle = %v, want it to grow while no feedback arrives", idle)
+	}
+	feedback := protocol.EncodeFeedback(protocol.ReceiverFeedback{Session: h.Session, HighestSeq: h.Sequence, Received: 1, Bitrate: 128000})
+	if _, err = listener.WriteToUDP(feedback, sender.LocalAddr().(*net.UDPAddr)); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if sender.FeedbackIdle() < 30*time.Millisecond {
+			return
+		}
+	}
+	t.Fatal("feedback did not reset FeedbackIdle")
+}

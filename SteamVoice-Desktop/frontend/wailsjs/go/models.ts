@@ -34,12 +34,32 @@ export namespace main {
 	        this.SettingsDeviceID = source["SettingsDeviceID"];
 	    }
 	}
-	export class Status {
+	export class DeviceStatus {
+	    DeviceID: string;
+	    Name: string;
 	    Connected: boolean;
-	    Device?: Device;
 	    Message: string;
 	    Bitrate: number;
 	    FrameMs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeviceStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.DeviceID = source["DeviceID"];
+	        this.Name = source["Name"];
+	        this.Connected = source["Connected"];
+	        this.Message = source["Message"];
+	        this.Bitrate = source["Bitrate"];
+	        this.FrameMs = source["FrameMs"];
+	    }
+	}
+	export class Status {
+	    ConnectedCount: number;
+	    Message: string;
+	    Devices: DeviceStatus[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Status(source);
@@ -47,11 +67,9 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.Connected = source["Connected"];
-	        this.Device = this.convertValues(source["Device"], Device);
+	        this.ConnectedCount = source["ConnectedCount"];
 	        this.Message = source["Message"];
-	        this.Bitrate = source["Bitrate"];
-	        this.FrameMs = source["FrameMs"];
+	        this.Devices = this.convertValues(source["Devices"], DeviceStatus);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"steamvoice-desktop/internal/capture"
@@ -28,28 +30,68 @@ type Device struct {
 	UpdatedAtMs      int64
 	SettingsDeviceID string
 }
-type Status struct {
+
+// DeviceStatus is the per-receiver streaming state pushed on stream:status.
+type DeviceStatus struct {
+	DeviceID  string
+	Name      string
 	Connected bool
-	Device    *Device
 	Message   string
 	Bitrate   int
 	FrameMs   int
 }
 
+// Status aggregates every active receiver for GetStatus.
+type Status struct {
+	ConnectedCount int
+	Message        string
+	Devices        []DeviceStatus
+}
+
+// feedbackStaleAfter is how long without receiver feedback marks a session
+// unresponsive; receivers report roughly every 200 ms while playing.
+const feedbackStaleAfter = 3 * time.Second
+
+type deviceSession struct {
+	device  Device
+	sender  *stream.Sender
+	encoder *codec.OpusEncoder
+	stale   bool
+	status  DeviceStatus
+}
+
 type App struct {
-	ctx        context.Context
-	mu         sync.Mutex
-	discoverer *discovery.Browser
-	sender     *stream.Sender
-	capture    *capture.Loopback
-	status     Status
+	ctx         context.Context
+	mu          sync.Mutex
+	discoverer  *discovery.Browser
+	sessions    map[string]*deviceSession
+	capture     *capture.Loopback
+	frameMs     int
+	staleAfter  time.Duration
 }
 
 func NewApp() *App {
-	return &App{status: Status{Message: "未连接接收端"}}
+	return &App{sessions: map[string]*deviceSession{}, staleAfter: feedbackStaleAfter}
 }
-func (a *App) Startup(ctx context.Context) { a.ctx = ctx }
-func (a *App) Shutdown(context.Context)    { _ = a.Disconnect() }
+func (a *App) Startup(ctx context.Context) {
+	a.ctx = ctx
+	go a.monitorLoop(ctx)
+}
+func (a *App) Shutdown(context.Context) {
+	a.mu.Lock()
+	sessions := a.sessions
+	c := a.capture
+	a.sessions = map[string]*deviceSession{}
+	a.capture = nil
+	a.frameMs = 0
+	a.mu.Unlock()
+	if c != nil {
+		c.Close()
+	}
+	for _, s := range sessions {
+		_ = s.sender.Close()
+	}
+}
 func (a *App) DiscoverDevices() ([]Device, error) {
 	if a.discoverer != nil {
 		a.discoverer.Close()
@@ -63,17 +105,12 @@ func (a *App) DiscoverDevices() ([]Device, error) {
 	a.discoverer = b
 	return nil, b.Start(a.ctx)
 }
+
+// Connect starts streaming to device. Multiple receivers may be connected at
+// the same time; every session encodes independently so per-receiver bitrate
+// adaptation keeps working. Reconnecting an already-connected device replaces
+// its session.
 func (a *App) Connect(device Device) error {
-	a.mu.Lock()
-	previousSender, previousCapture := a.sender, a.capture
-	a.sender, a.capture = nil, nil
-	a.mu.Unlock()
-	if previousCapture != nil {
-		previousCapture.Close()
-	}
-	if previousSender != nil {
-		_ = previousSender.Close()
-	}
 	bitrate := device.Bitrate
 	if bitrate == 0 {
 		bitrate = 128000
@@ -103,80 +140,176 @@ func (a *App) Connect(device Device) error {
 	if !strings.EqualFold(device.Codec, "opus") {
 		return fmt.Errorf("receiver does not support Opus (codec=%s)", device.Codec)
 	}
-	s, err := stream.NewSender(fmt.Sprintf("%s:%d", device.Host, device.Port), bitrate, frameMs)
+	a.mu.Lock()
+	activeFrameMs := a.frameMs
+	a.mu.Unlock()
+	if activeFrameMs != 0 && activeFrameMs != frameMs {
+		return fmt.Errorf("已连接的接收端正在使用 %d ms 音频帧，请先断开全部设备再更改帧时长", activeFrameMs)
+	}
+	sender, err := stream.NewSender(fmt.Sprintf("%s:%d", device.Host, device.Port), bitrate, frameMs)
 	if err != nil {
 		return err
 	}
 	encoder, err := codec.NewOpusEncoder(bitrate, frameMs)
 	if err != nil {
-		_ = s.Close()
+		_ = sender.Close()
 		return fmt.Errorf("初始化 Opus 编码器失败: %w", err)
 	}
-	s.SetBitrateCallback(func(next int) {
+	session := &deviceSession{device: device, sender: sender, encoder: encoder, status: DeviceStatus{DeviceID: device.ID, Name: device.Name, Connected: true, Message: "正在传输系统音频", Bitrate: bitrate, FrameMs: frameMs}}
+	sender.SetBitrateCallback(func(next int) {
 		if err := encoder.SetBitrate(next); err != nil {
 			log.Printf("opus bitrate update failed: %v", err)
 		}
 		a.mu.Lock()
-		a.status.Bitrate = next
-		status := a.status
+		current, stillActive := a.sessions[device.ID]
+		status := session.status
+		ctx := a.ctx
+		if stillActive && current == session {
+			session.status.Bitrate = next
+			status = session.status
+		} else {
+			stillActive = false
+		}
 		a.mu.Unlock()
-		if a.ctx != nil {
-			runtime.EventsEmit(a.ctx, "stream:status", status)
+		if stillActive && ctx != nil {
+			runtime.EventsEmit(ctx, "stream:status", status)
 		}
 	})
 	if device.UpdatedAtMs > 0 || device.SettingsDeviceID != "" {
-		if err := s.SendSettings(protocol.Settings{BitrateKbps: uint32(bitrate), FrameMs: uint16(frameMs), UpdatedAtMs: device.UpdatedAtMs, DeviceID: device.SettingsDeviceID}); err != nil {
+		if err := sender.SendSettings(protocol.Settings{BitrateKbps: uint32(bitrate), FrameMs: uint16(frameMs), UpdatedAtMs: device.UpdatedAtMs, DeviceID: device.SettingsDeviceID}); err != nil {
 			log.Printf("settings sync failed: %v", err)
 		}
 	}
 	a.mu.Lock()
-	a.sender = s
-	a.mu.Unlock()
-	c, err := capture.Start(frameMs, func(pcm []byte) {
-		a.mu.Lock()
-		sender := a.sender
+	if a.frameMs != 0 && a.frameMs != frameMs {
 		a.mu.Unlock()
-		if sender != nil {
-			encoded, err := encoder.EncodePCM(pcm)
-			if err == nil {
-				err = sender.SendOpus(encoded)
-			}
-			if err != nil {
-				log.Printf("audio UDP send failed: %v", err)
-			}
-		}
-	})
-	if err != nil {
-		_ = s.Close()
-		a.mu.Lock()
-		a.sender = nil
-		a.mu.Unlock()
-		return fmt.Errorf("启动 WASAPI 系统音频采集失败: %w", err)
+		_ = sender.Close()
+		return fmt.Errorf("已连接的接收端正在使用 %d ms 音频帧，请先断开全部设备再更改帧时长", a.frameMs)
 	}
-	a.mu.Lock()
-	a.sender = s
-	a.capture = c
-	a.status = Status{Connected: true, Device: &device, Message: "正在传输系统音频", Bitrate: bitrate, FrameMs: frameMs}
+	if a.capture == nil {
+		c, err := capture.Start(frameMs, a.onPCM)
+		if err != nil {
+			a.mu.Unlock()
+			_ = sender.Close()
+			return fmt.Errorf("启动 WASAPI 系统音频采集失败: %w", err)
+		}
+		a.capture = c
+		a.frameMs = frameMs
+	}
+	previous := a.sessions[device.ID]
+	a.sessions[device.ID] = session
 	a.mu.Unlock()
-	runtime.EventsEmit(a.ctx, "stream:status", a.status)
+	if previous != nil {
+		_ = previous.sender.Close()
+	}
+	a.emitStatus(session.status)
 	return nil
 }
-func (a *App) Disconnect() error {
+
+// Disconnect stops streaming to the receiver identified by deviceID.
+func (a *App) Disconnect(deviceID string) error {
 	a.mu.Lock()
-	capture, sender := a.capture, a.sender
-	a.capture, a.sender = nil, nil
-	a.status = Status{Message: "已断开连接"}
-	status, ctx := a.status, a.ctx
+	session, ok := a.sessions[deviceID]
+	if ok {
+		delete(a.sessions, deviceID)
+	}
+	var c *capture.Loopback
+	if ok && len(a.sessions) == 0 {
+		c = a.capture
+		a.capture = nil
+		a.frameMs = 0
+	}
 	a.mu.Unlock()
-	if capture != nil {
-		capture.Close()
+	if c != nil {
+		c.Close()
 	}
-	if sender != nil {
-		_ = sender.Close()
+	if !ok {
+		return nil
 	}
+	_ = session.sender.Close()
+	a.emitStatus(DeviceStatus{DeviceID: deviceID, Name: session.device.Name, Message: "已断开连接"})
+	return nil
+}
+
+func (a *App) GetStatus() Status {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	status := Status{Devices: make([]DeviceStatus, 0, len(a.sessions))}
+	for _, s := range a.sessions {
+		status.Devices = append(status.Devices, s.status)
+	}
+	sort.Slice(status.Devices, func(i, j int) bool { return status.Devices[i].Name < status.Devices[j].Name })
+	status.ConnectedCount = len(status.Devices)
+	if status.ConnectedCount == 0 {
+		status.Message = "未连接接收端"
+	} else {
+		status.Message = fmt.Sprintf("已连接 %d 台接收端，正在发送电脑音频", status.ConnectedCount)
+	}
+	return status
+}
+
+// onPCM runs on the WASAPI capture thread: encode once per session and send.
+func (a *App) onPCM(pcm []byte) {
+	a.mu.Lock()
+	sessions := make([]*deviceSession, 0, len(a.sessions))
+	for _, s := range a.sessions {
+		sessions = append(sessions, s)
+	}
+	a.mu.Unlock()
+	for _, s := range sessions {
+		encoded, err := s.encoder.EncodePCM(pcm)
+		if err == nil {
+			err = s.sender.SendOpus(encoded)
+		}
+		if err != nil {
+			log.Printf("audio UDP send to %s failed: %v", s.device.Name, err)
+		}
+	}
+}
+
+// monitorLoop flags sessions whose receiver stopped reporting feedback.
+func (a *App) monitorLoop(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		for _, status := range a.checkStaleSessions() {
+			a.emitStatus(status)
+		}
+	}
+}
+
+// checkStaleSessions toggles the unresponsive flag of every session whose
+// receiver feedback went silent or resumed, returning the changed statuses.
+func (a *App) checkStaleSessions() []DeviceStatus {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var updated []DeviceStatus
+	for _, s := range a.sessions {
+		stale := s.sender.FeedbackIdle() > a.staleAfter
+		if stale == s.stale {
+			continue
+		}
+		s.stale = stale
+		if stale {
+			s.status.Message = "接收端无响应"
+		} else {
+			s.status.Message = "正在传输系统音频"
+		}
+		updated = append(updated, s.status)
+	}
+	return updated
+}
+
+func (a *App) emitStatus(status DeviceStatus) {
+	a.mu.Lock()
+	ctx := a.ctx
+	a.mu.Unlock()
 	if ctx != nil {
 		runtime.EventsEmit(ctx, "stream:status", status)
 	}
-	return nil
 }
-func (a *App) GetStatus() Status { a.mu.Lock(); defer a.mu.Unlock(); return a.status }
