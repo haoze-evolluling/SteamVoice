@@ -112,7 +112,6 @@ type App struct {
 	localBitrate    int
 	localFrameMs    int
 	clockAnchor     time.Time
-	frameIndex      uint64
 }
 
 // streamClock maps "now" into the audio timestamp timebase: nanoseconds
@@ -318,7 +317,7 @@ func (a *App) Connect(device Device) error {
 		a.capture = c
 		a.frameMs = frameMs
 		a.clockAnchor = time.Now()
-		a.frameIndex = 0
+
 	}
 	previous := a.sessions[device.ID]
 	a.sessions[device.ID] = session
@@ -343,7 +342,7 @@ func (a *App) Disconnect(deviceID string) error {
 		a.capture = nil
 		a.frameMs = 0
 		a.clockAnchor = time.Time{}
-		a.frameIndex = 0
+
 	}
 	a.mu.Unlock()
 	if c != nil {
@@ -527,22 +526,22 @@ func newRequestID() string {
 	return hex.EncodeToString(raw[:])
 }
 
-// onPCM runs on the WASAPI capture thread: stamp the frame with its position
-// in the stream timeline, then encode once per session and send.
+// onPCM runs on the WASAPI capture thread: stamp the frame with its capture
+// time, then encode once per session and send. Real-time (not frame-count
+// derived) timestamps keep the audio timeline consistent with the time-sync
+// clock even across silent gaps where no frames are produced.
 func (a *App) onPCM(pcm []byte) {
 	a.mu.Lock()
-	frameMs := a.frameMs
-	index := a.frameIndex
-	a.frameIndex++
+	anchor := a.clockAnchor
 	sessions := make([]*deviceSession, 0, len(a.sessions))
 	for _, s := range a.sessions {
 		sessions = append(sessions, s)
 	}
 	a.mu.Unlock()
-	if frameMs == 0 {
+	if anchor.IsZero() {
 		return
 	}
-	tsNs := index * uint64(frameMs) * 1_000_000
+	tsNs := uint64(time.Since(anchor))
 	for _, s := range sessions {
 		encoded, err := s.encoder.EncodePCM(pcm)
 		if err == nil {

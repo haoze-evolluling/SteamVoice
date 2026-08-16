@@ -102,7 +102,7 @@ class AudioReceiverService : Service() {
         val trust = PcTrustRepository(this@AudioReceiverService)
         var settings = runBlocking { repository.settings.first() }
         val track = newTrack()
-        val buffer = PacketJitterBuffer(targetPackets = 1)
+        val buffer = PacketJitterBuffer(targetPackets = 2)
         socket = DatagramSocket(SteamVoiceProtocol.port)
         val bytes = ByteArray(MAX_UDP_PACKET)
         var received = 0L
@@ -118,6 +118,15 @@ class AudioReceiverService : Service() {
         var actualBitrate = settings.initialBitrateKbps * 1000
         val clockSync = ClockSyncEstimator()
         var lastTimeSyncSentNs = 0L
+        var expectedNextTsNs = 0L
+        var lastFrameMsNs = 10_000_000L
+        val player = SynchronizedPlayer(track)
+        player.setClock { streamNs -> clockSync.mapToLocal(streamNs) }
+        player.start()
+        var playerOverflow = 0L
+        fun offerToPlayer(pcm: ByteArray, tsNs: Long) {
+            if (!player.offer(pcm, tsNs)) playerOverflow++
+        }
         try {
             socket?.soTimeout = 50
             while (!stopRequested && !Thread.currentThread().isInterrupted) {
@@ -177,7 +186,7 @@ class AudioReceiverService : Service() {
                 if (packet == null) { Log.w(TAG, "invalid UDP packet length=${datagram.length}"); continue }
                 lastAddress = datagram.address; lastPort = datagram.port
                 if (activePc!!.port == 0) activePc!!.port = datagram.port
-                if (activeSession != 0L && activeSession != packet.session) { highest = 0; receivedCount = 0; lostCount = 0; fecPending = false }
+                if (activeSession != 0L && activeSession != packet.session) { highest = 0; receivedCount = 0; lostCount = 0; fecPending = false; expectedNextTsNs = 0L }
                 activeSession = packet.session
                 actualBitrate = packet.bitrate
                 if (packet.sequence > highest) { lostCount += (packet.sequence - highest - if (receivedCount == 0L) 0 else 1).coerceAtLeast(0); highest = packet.sequence }
@@ -188,19 +197,32 @@ class AudioReceiverService : Service() {
                     val item = buffer.takeItem() ?: break
                     when (item) {
                         is PacketJitterBuffer.Item.Packet -> {
-                            if (fecPending) { val recovered = if ((item.value.flags and 1) != 0) OpusNative.decode(decoderHandle, item.value.opus, true) else OpusNative.decodePlc(decoderHandle, 480 * item.value.frameMilliseconds / 10); recovered?.let { track.write(it, 0, it.size, AudioTrack.WRITE_BLOCKING) }; fecPending = false }
-                            OpusNative.decode(decoderHandle, item.value.opus, false)?.let { pcm -> val written = track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING); if (written < 0) Log.e(TAG, "AudioTrack.write failed: $written") }
+                            val packetFrame = item.value
+                            if (fecPending) {
+                                val recovered = if ((packetFrame.flags and 1) != 0) OpusNative.decode(decoderHandle, packetFrame.opus, true) else OpusNative.decodePlc(decoderHandle, 480 * packetFrame.frameMilliseconds / 10)
+                                fecPending = false
+                                if (recovered != null) offerToPlayer(recovered, expectedNextTsNs)
+                            }
+                            val pcm = OpusNative.decode(decoderHandle, packetFrame.opus, false)
+                            if (pcm != null) offerToPlayer(pcm, packetFrame.timestampNs)
+                            expectedNextTsNs = packetFrame.timestampNs + packetFrame.frameMilliseconds * 1_000_000L
+                            lastFrameMsNs = packetFrame.frameMilliseconds * 1_000_000L
                         }
-                        PacketJitterBuffer.Item.Gap -> { lostCount++; fecPending = true }
+                        PacketJitterBuffer.Item.Gap -> {
+                            lostCount++
+                            fecPending = true
+                            expectedNextTsNs += lastFrameMsNs
+                        }
                     }
                 }
-                if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, buffer.queuedPackets(), actualBitrate); lastFeedback = System.nanoTime() }
+                if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, buffer.queuedPackets() + player.backlogFrames(), actualBitrate); lastFeedback = System.nanoTime() }
             }
         } catch (e: Exception) {
             if (!stopRequested) Log.e(TAG, "receiver loop stopped", e)
         } finally {
+            player.close()
             OpusNative.destroyDecoder(decoderHandle)
-            Log.i(TAG, "receiver stopped received=$received decoded=$decoded unauthorized=$unauthorizedDrops")
+            Log.i(TAG, "receiver stopped received=$received decoded=$decoded unauthorized=$unauthorizedDrops overflow=$playerOverflow droppedLate=${player.droppedLateFrames} played=${player.playedFrames}")
             track.stop()
             track.release()
         }
