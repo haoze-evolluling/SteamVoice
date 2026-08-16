@@ -45,6 +45,20 @@ type DeviceStatus struct {
 	Message   string
 	Bitrate   int
 	FrameMs   int
+	// Phase mirrors the receiver's calibration progress (0-3) for UI restore.
+	Phase int
+}
+
+// CalibrationProgress reports one receiver's multi-device sync status as it
+// happens, pushed on calibration:progress. Phase follows the receiver's
+// reported sync state: 1 measuring clock offset, 2 aligned and ramping up,
+// 3 synchronized playback running.
+type CalibrationProgress struct {
+	DeviceID string
+	Name     string
+	Phase    int
+	OffsetMs int
+	RttMs    int
 }
 
 // Status aggregates every active receiver for GetStatus.
@@ -98,6 +112,12 @@ type deviceSession struct {
 	encoder *codec.OpusEncoder
 	stale   bool
 	status  DeviceStatus
+	// calib tracks the receiver-reported sync phase plus the last pushed
+	// clock readout, throttling calibration:progress events.
+	calib        int
+	calibOffset  int
+	calibRtt     int
+	calibEmitted time.Time
 }
 
 type pendingRequest struct {
@@ -293,7 +313,36 @@ func (a *App) Connect(device Device) error {
 		_ = sender.Close()
 		return fmt.Errorf("初始化 Opus 编码器失败: %w", err)
 	}
-	session := &deviceSession{device: device, sender: sender, encoder: encoder, status: DeviceStatus{DeviceID: device.ID, Name: device.Name, Connected: true, Message: "正在传输系统音频", Bitrate: bitrate, FrameMs: frameMs}}
+	session := &deviceSession{device: device, sender: sender, encoder: encoder, status: DeviceStatus{DeviceID: device.ID, Name: device.Name, Connected: true, Message: "正在传输系统音频", Bitrate: bitrate, FrameMs: frameMs, Phase: 0}}
+	sender.SetFeedbackCallback(func(f protocol.ReceiverFeedback) {
+		if f.SyncState == protocol.SyncUnknown {
+			return
+		}
+		a.mu.Lock()
+		current, stillActive := a.sessions[device.ID]
+		if !stillActive || current != session {
+			a.mu.Unlock()
+			return
+		}
+		phase := int(f.SyncState)
+		now := time.Now()
+		phaseChanged := phase != session.calib
+		statsChanged := phase >= protocol.SyncAligned && (int(f.OffsetMs) != session.calibOffset || int(f.RttMs) != session.calibRtt)
+		emit := phaseChanged || (statsChanged && now.Sub(session.calibEmitted) >= 500*time.Millisecond)
+		progress := CalibrationProgress{DeviceID: device.ID, Name: device.Name, Phase: phase, OffsetMs: int(f.OffsetMs), RttMs: int(f.RttMs)}
+		if emit {
+			session.calibEmitted = now
+			session.calibOffset = int(f.OffsetMs)
+			session.calibRtt = int(f.RttMs)
+		}
+		session.calib = phase
+		session.status.Phase = phase
+		ctx := a.ctx
+		a.mu.Unlock()
+		if emit && ctx != nil {
+			runtime.EventsEmit(ctx, "calibration:progress", progress)
+		}
+	})
 	sender.SetBitrateCallback(func(next int) {
 		if err := encoder.SetBitrate(next); err != nil {
 			log.Printf("opus bitrate update failed: %v", err)

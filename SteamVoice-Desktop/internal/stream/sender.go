@@ -24,6 +24,7 @@ type Sender struct {
 	closeOnce    sync.Once
 	feedbackWG   sync.WaitGroup
 	onBitrate    func(int)
+	onFeedback   func(protocol.ReceiverFeedback)
 	lastFeedback time.Time
 	connResult   chan protocol.ConnControl
 	created      time.Time
@@ -78,6 +79,14 @@ func (s *Sender) clockNow() uint64 {
 }
 
 func (s *Sender) SetBitrateCallback(fn func(int)) { s.mu.Lock(); s.onBitrate = fn; s.mu.Unlock() }
+
+// SetFeedbackCallback installs a listener invoked for every valid feedback
+// report, carrying the receiver's calibration progress.
+func (s *Sender) SetFeedbackCallback(fn func(protocol.ReceiverFeedback)) {
+	s.mu.Lock()
+	s.onFeedback = fn
+	s.mu.Unlock()
+}
 
 // FeedbackIdle reports how long ago the last valid receiver feedback arrived,
 // counted from sender creation when no feedback has been received yet.
@@ -160,6 +169,7 @@ func (s *Sender) feedbackLoop() {
 		}
 		s.mu.Lock()
 		s.lastFeedback = time.Now()
+		feedbackCB := s.onFeedback
 		cur := int(s.bitrate)
 		loss := float64(f.Lost) / float64(max32(f.Received+f.Lost, 1))
 		next := cur
@@ -186,6 +196,9 @@ func (s *Sender) feedbackLoop() {
 			}
 		} else {
 			s.mu.Unlock()
+		}
+		if feedbackCB != nil {
+			feedbackCB(f)
 		}
 	}
 }

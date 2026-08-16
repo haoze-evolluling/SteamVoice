@@ -17,12 +17,35 @@ data class SteamVoicePacket(
     val timestampNs: Long = 0L,
 )
 
-data class ReceiverFeedback(val session: Long, val highestSeq: Long, val received: Long, val lost: Long, val queue: Int, val bitrate: Int) {
+/** 校准阶段（随反馈上报，驱动两端同步校准 UI）。 */
+object SyncState {
+    const val UNKNOWN = 0
+    const val CALIBRATING = 1
+    const val ALIGNED = 2
+    const val PLAYING = 3
+}
+
+data class ReceiverFeedback(
+    val session: Long,
+    val highestSeq: Long,
+    val received: Long,
+    val lost: Long,
+    val queue: Int,
+    val bitrate: Int,
+    val syncState: Int = SyncState.UNKNOWN,
+    val offsetMs: Int = 0,
+    val rttMs: Int = 0,
+) {
     fun encode(): ByteArray {
-        val b = ByteBuffer.allocate(30).order(ByteOrder.BIG_ENDIAN)
+        val b = ByteBuffer.allocate(SIZE).order(ByteOrder.BIG_ENDIAN)
         b.put("SVCT".toByteArray()).put(SteamVoiceProtocol.version.toByte()).put(1.toByte()).putShort(0)
         b.putInt(session.toInt()).putInt(highestSeq.toInt()).putInt(received.toInt()).putInt(lost.toInt()).putShort(queue.toShort()).putInt(bitrate)
+        b.put(syncState.toByte()).putShort(offsetMs.toShort()).putShort(rttMs.toShort())
         return b.array()
+    }
+
+    companion object {
+        const val SIZE = 35
     }
 }
 

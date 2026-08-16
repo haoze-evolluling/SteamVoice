@@ -39,14 +39,31 @@ func DecodeSettings(b []byte) (Settings, error) {
 
 const ControlSize = 30
 
+// SyncV2Size is the extended feedback length carrying calibration stats.
+const SyncV2Size = 35
+
+// Receiver sync states reported in feedback, driving the calibration UI.
+const (
+	SyncUnknown    = 0 // legacy receiver or nothing reported yet
+	SyncCalibrating = 1 // receiving audio, clock offset still being measured
+	SyncAligned    = 2 // clock offset converged, playback ramping up
+	SyncPlaying    = 3 // synchronized playback running
+)
+
 type ReceiverFeedback struct {
 	Session, HighestSeq, Received, Lost uint32
 	Queue                               uint16
 	Bitrate                             uint32
+	// SyncState plus the receiver's clock-sync measurements (median offset
+	// against the sender clock and exchange round-trip time). Zero values
+	// mean a receiver predating the extension.
+	SyncState uint8
+	OffsetMs  int16
+	RttMs     uint16
 }
 
 func EncodeFeedback(f ReceiverFeedback) []byte {
-	b := make([]byte, ControlSize)
+	b := make([]byte, SyncV2Size)
 	copy(b, "SVCT")
 	b[4] = Version
 	b[5] = 1
@@ -56,11 +73,20 @@ func EncodeFeedback(f ReceiverFeedback) []byte {
 	binary.BigEndian.PutUint32(b[20:], f.Lost)
 	binary.BigEndian.PutUint16(b[24:], f.Queue)
 	binary.BigEndian.PutUint32(b[26:], f.Bitrate)
+	b[30] = f.SyncState
+	binary.BigEndian.PutUint16(b[31:], uint16(f.OffsetMs))
+	binary.BigEndian.PutUint16(b[33:], f.RttMs)
 	return b
 }
 func DecodeFeedback(b []byte) (ReceiverFeedback, error) {
-	if len(b) != ControlSize || string(b[:4]) != "SVCT" || b[4] != Version || b[5] != 1 {
+	if (len(b) != ControlSize && len(b) != SyncV2Size) || string(b[:4]) != "SVCT" || b[4] != Version || b[5] != 1 {
 		return ReceiverFeedback{}, errors.New("invalid feedback")
 	}
-	return ReceiverFeedback{binary.BigEndian.Uint32(b[8:]), binary.BigEndian.Uint32(b[12:]), binary.BigEndian.Uint32(b[16:]), binary.BigEndian.Uint32(b[20:]), binary.BigEndian.Uint16(b[24:]), binary.BigEndian.Uint32(b[26:])}, nil
+	f := ReceiverFeedback{Session: binary.BigEndian.Uint32(b[8:]), HighestSeq: binary.BigEndian.Uint32(b[12:]), Received: binary.BigEndian.Uint32(b[16:]), Lost: binary.BigEndian.Uint32(b[20:]), Queue: binary.BigEndian.Uint16(b[24:]), Bitrate: binary.BigEndian.Uint32(b[26:])}
+	if len(b) == SyncV2Size {
+		f.SyncState = b[30]
+		f.OffsetMs = int16(binary.BigEndian.Uint16(b[31:]))
+		f.RttMs = binary.BigEndian.Uint16(b[33:])
+	}
+	return f, nil
 }

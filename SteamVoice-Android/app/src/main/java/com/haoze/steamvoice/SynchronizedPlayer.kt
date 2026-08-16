@@ -28,13 +28,15 @@ class SynchronizedPlayer(
     @Volatile private var mapToLocal: ((Long) -> Long?)? = null
     private var worker: Thread? = null
 
-    // 漂移控制状态仅播放线程访问。
+    // 漂移控制状态仅播放线程访问（playedFrames 除外，供接收线程只读）。
     private var latenessEmaNs = 0.0
     private var playbackRate = NOMINAL_RATE
     private var nextRateCheckNs = 0L
     var droppedLateFrames = 0L
         private set
-    var playedFrames = 0L
+
+    /** 已写入 AudioTrack 的帧数；接收线程读取以判定校准是否完成。 */
+    @Volatile var playedFrames = 0L
         private set
 
     fun start() {

@@ -9,6 +9,19 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +36,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
@@ -60,6 +74,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -67,8 +85,12 @@ import androidx.lifecycle.lifecycleScope
 import androidx.core.content.ContextCompat
 import com.haoze.steamvoice.ui.theme.SteamVoiceTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.sin
 
 
 
@@ -159,9 +181,18 @@ private fun ReceiverScreen(
     val devices by discovery.devices.collectAsState()
     val activePc by ConnectionBus.activePc.collectAsState()
     val authPrompt by ConnectionBus.authPrompt.collectAsState()
+    val calibration by ConnectionBus.calibration.collectAsState()
     val pcStates = remember { mutableStateMapOf<String, PcConnectionState>() }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    // 校准完成后面板短暂停留展示“已同步”，再自然收起回到播放状态。
+    var showCalibDone by remember { mutableStateOf(false) }
+    LaunchedEffect(calibration) {
+        when (calibration?.phase) {
+            CalibrationPhase.DONE -> { showCalibDone = true; delay(1800); showCalibDone = false }
+            else -> showCalibDone = false
+        }
+    }
     LaunchedEffect(Unit) {
         ConnectionBus.messages.collect { scope.launch { snackbar.showSnackbar(it) } }
     }
@@ -195,54 +226,66 @@ private fun ReceiverScreen(
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
-        if (devices.isEmpty()) {
-            EmptyDevices(Modifier.padding(padding))
-        } else {
-            LazyColumn(
-                Modifier.fillMaxSize().padding(padding).navigationBarsPadding(),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp),
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            val calib = calibration
+            AnimatedVisibility(
+                visible = calib != null && (calib.phase != CalibrationPhase.DONE || showCalibDone),
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
             ) {
-                item {
-                    Row(
-                        Modifier.padding(start = 20.dp, top = 4.dp, bottom = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("附近的电脑", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                        Text(
-                            "${devices.size} 台",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                if (calib != null) {
+                    CalibrationPanel(state = calib, done = calib.phase == CalibrationPhase.DONE && showCalibDone)
                 }
-                items(devices, key = { it.deviceId }) { pc ->
-                    // 实际连接状态以接收服务的活动发送方为准。
-                    val effective = if (activePc?.deviceId == pc.deviceId) PcConnectionState.CONNECTED else pcStates[pc.deviceId] ?: PcConnectionState.ONLINE
-                    PcCard(
-                        pc = pc,
-                        state = effective,
-                        onConnect = {
-                            pcStates[pc.deviceId] = PcConnectionState.CONNECTING
-                            onConnect(pc) { result ->
-                                when (result) {
-                                    is PcConnector.ConnectResult.Accepted -> pcStates.remove(pc.deviceId)
-                                    is PcConnector.ConnectResult.Denied -> {
-                                        pcStates.remove(pc.deviceId)
-                                        scope.launch { snackbar.showSnackbar("电脑端拒绝了连接请求") }
-                                    }
-                                    is PcConnector.ConnectResult.Timeout -> {
-                                        pcStates.remove(pc.deviceId)
-                                        scope.launch { snackbar.showSnackbar("无法连接 ${pc.name}，请确认电脑端正在运行") }
+            }
+            if (devices.isEmpty()) {
+                EmptyDevices(Modifier.weight(1f))
+            } else {
+                LazyColumn(
+                    Modifier.fillMaxSize().navigationBarsPadding(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp),
+                ) {
+                    item {
+                        Row(
+                            Modifier.padding(start = 20.dp, top = 4.dp, bottom = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("附近的电脑", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                            Text(
+                                "${devices.size} 台",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    items(devices, key = { it.deviceId }) { pc ->
+                        // 实际连接状态以接收服务的活动发送方为准。
+                        val effective = if (activePc?.deviceId == pc.deviceId) PcConnectionState.CONNECTED else pcStates[pc.deviceId] ?: PcConnectionState.ONLINE
+                        PcCard(
+                            pc = pc,
+                            state = effective,
+                            onConnect = {
+                                pcStates[pc.deviceId] = PcConnectionState.CONNECTING
+                                onConnect(pc) { result ->
+                                    when (result) {
+                                        is PcConnector.ConnectResult.Accepted -> pcStates.remove(pc.deviceId)
+                                        is PcConnector.ConnectResult.Denied -> {
+                                            pcStates.remove(pc.deviceId)
+                                            scope.launch { snackbar.showSnackbar("电脑端拒绝了连接请求") }
+                                        }
+                                        is PcConnector.ConnectResult.Timeout -> {
+                                            pcStates.remove(pc.deviceId)
+                                            scope.launch { snackbar.showSnackbar("无法连接 ${pc.name}，请确认电脑端正在运行") }
+                                        }
                                     }
                                 }
-                            }
-                        },
-                        onDisconnect = {
-                            pcStates.remove(pc.deviceId)
-                            onDisconnect(pc)
-                        },
-                    )
+                            },
+                            onDisconnect = {
+                                pcStates.remove(pc.deviceId)
+                                onDisconnect(pc)
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -255,6 +298,129 @@ private fun ReceiverScreen(
                 ConnectionBus.decisions.add(Triple(prompt.requestId, allow, remember))
             },
         )
+    }
+}
+
+private val CALIBRATION_STEPS = listOf("检测", "计算", "同步", "完成")
+
+private fun CalibrationPhase.label(): String = when (this) {
+    CalibrationPhase.DETECT -> "正在检测电脑的音频信号"
+    CalibrationPhase.CALCULATE -> "测量时钟偏差，与电脑时间基准对时"
+    CalibrationPhase.SYNC -> "已对齐时钟，等待统一播放时刻"
+    CalibrationPhase.DONE -> "已同步 · 回到正常播放"
+}
+
+/**
+ * 多设备同步校准面板：波形动画 + 检测→计算→同步→完成阶段指示。
+ * 阶段由接收服务的真实校准状态驱动（时钟对时、播放启动），
+ * 完成后短暂展示“已同步”并自然收起，回到正常播放界面。
+ */
+@Composable
+private fun CalibrationPanel(state: CalibrationState, done: Boolean) {
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.primaryContainer,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CalibrationWave(Modifier.size(width = 64.dp, height = 28.dp), idle = done)
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (done) "已同步" else "同步校准中",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                    val stats = if (done || state.phase == CalibrationPhase.SYNC) {
+                        val offset = state.offsetMs
+                        val rtt = state.rttMs
+                        if (offset != null && rtt != null) "时钟偏差 ${abs(offset)} ms · 往返 $rtt ms" else null
+                    } else null
+                    Text(
+                        stats ?: state.phase.label(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                    )
+                }
+            }
+            CalibrationSteps(state.phase)
+        }
+    }
+}
+
+/** 随校准进度起伏的声波条；完成后静止为低幅波形。 */
+@Composable
+private fun CalibrationWave(modifier: Modifier = Modifier, idle: Boolean) {
+    val transition = rememberInfiniteTransition(label = "calib-wave")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2f * PI).toFloat(),
+        animationSpec = infiniteRepeatable(tween(1400, easing = LinearEasing)),
+        label = "calib-wave-phase",
+    )
+    val barColor = MaterialTheme.colorScheme.primary
+    Canvas(modifier) {
+        val bars = 12
+        val gap = 2.dp.toPx()
+        val barWidth = (size.width - gap * (bars - 1)) / bars
+        val mid = size.height / 2f
+        for (i in 0 until bars) {
+            val level = if (idle) 0.3f else abs(sin(phase + i * 0.55f)) * 0.85f + 0.15f
+            val h = size.height * level * 0.9f
+            drawRoundRect(
+                color = barColor,
+                topLeft = Offset(i * (barWidth + gap), mid - h / 2f),
+                size = Size(barWidth, h),
+                cornerRadius = CornerRadius(barWidth / 2f),
+            )
+        }
+    }
+}
+
+/** 检测 → 计算 → 同步 → 完成 的阶段指示，当前阶段脉动高亮。 */
+@Composable
+private fun CalibrationSteps(current: CalibrationPhase) {
+    val activeIndex = when (current) {
+        CalibrationPhase.DETECT -> 0
+        CalibrationPhase.CALCULATE -> 1
+        CalibrationPhase.SYNC -> 2
+        CalibrationPhase.DONE -> 3
+    }
+    val pulse = rememberInfiniteTransition(label = "step-pulse")
+    val scale by pulse.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.3f,
+        animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse),
+        label = "step-pulse-scale",
+    )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        CALIBRATION_STEPS.forEachIndexed { index, label ->
+            if (index > 0) {
+                Spacer(Modifier.width(6.dp))
+                Box(
+                    Modifier
+                        .width(16.dp)
+                        .height(2.dp)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = if (index <= activeIndex) 0.7f else 0.25f)),
+                )
+                Spacer(Modifier.width(6.dp))
+            }
+            val active = index == activeIndex && current != CalibrationPhase.DONE
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Surface(
+                    shape = CircleShape,
+                    color = if (index <= activeIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.size(10.dp).then(if (active) Modifier.scale(scale) else Modifier),
+                ) {}
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (index <= activeIndex) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.55f),
+                )
+            }
+        }
     }
 }
 

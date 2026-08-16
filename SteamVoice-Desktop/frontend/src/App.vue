@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { Connect, DiscoverDevices, Disconnect, GetStatus, GetIdentity, ListAuthorizedDevices, RemoveAuthorizedDevice, RespondConnection, SaveLocalSettings } from '../wailsjs/go/main/App';
 import { EventsOn, WindowSetDarkTheme, WindowSetLightTheme, WindowSetSystemDefaultTheme } from '../wailsjs/runtime/runtime';
 
 type Theme = 'light' | 'dark' | 'system';
 type Settings = { bitrate: number; frameMs: number; theme: Theme; updatedAtMs: number; deviceId: string };
 type Device = { name: string; host: string; port: number; id: string; codec: string; sampleRate: number; channels: number; bitrate: number; frameMs: number; supportedFrameMs: number[]; updatedAtMs: number; settingsDeviceId: string };
-type DeviceStatus = { deviceId: string; name: string; connected: boolean; message: string; bitrate: number; frameMs: number };
+type DeviceStatus = { deviceId: string; name: string; connected: boolean; message: string; bitrate: number; frameMs: number; phase: number };
 type ConnRequest = { requestId: string; deviceId: string; name: string; host: string };
 type AuthorizedDevice = { ID: string; Name: string; AddedAtMs: number };
+type Calibration = { phase: number; offsetMs: number; rttMs: number; updatedAt: number };
+const phaseLabels = ['检测', '计算', '同步', '完成'];
+const phaseHints = ['检测接收信号', '测量时钟偏差', '对齐播放时刻', '同步播放中'];
 const settingsKey = 'steamvoice.desktop.settings.v2';
 const deviceIdKey = 'steamvoice.desktop.device_id';
 const deviceId = localStorage.getItem(deviceIdKey) ?? crypto.randomUUID();
@@ -25,10 +28,12 @@ const rememberChoice = ref(true);
 const identity = ref<{ deviceId: string; name: string }>({ deviceId: '', name: '' });
 const authorizedDevices = ref<AuthorizedDevice[]>([]);
 const connecting = ref<Record<string, boolean>>({});
+const calibration = ref<Record<string, Calibration>>({});
+const syncFlash = ref(false);
+let syncFlashTimer: number | undefined;
 const connectedCount = computed(() => Object.keys(connected.value).length);
 const connectedDevices = computed(() => devices.value.filter((device) => connected.value[device.id]));
 const headerStatus = computed(() => (connectedCount.value > 0 ? `已连接 ${connectedCount.value} 台接收端${connectedCount.value > 1 ? ' · 同步播放中' : '，正在发送电脑音频'}` : status.value));
-const syncBadge = computed(() => connectedCount.value > 1);
 const supportedFrames = computed(() => {
   if (connectedDevices.value.length) return connectedDevices.value.reduce((acc: number[], device) => acc.filter((frame) => device.supportedFrameMs.includes(frame)), [10, 20]);
   return devices.value.length ? Array.from(new Set(devices.value.flatMap((device) => device.supportedFrameMs))) : [10, 20];
@@ -45,7 +50,31 @@ function normalizeDevice(raw: any): Device {
   return { name: raw?.name ?? raw?.Name ?? 'Android device', host: raw?.host ?? raw?.Host ?? '', port: raw?.port ?? raw?.Port ?? 0, id: raw?.id ?? raw?.ID ?? raw?.Id ?? raw?.name ?? raw?.Name ?? '', codec: raw?.codec ?? raw?.Codec ?? '', sampleRate: raw?.sampleRate ?? raw?.SampleRate ?? 48000, channels: raw?.channels ?? raw?.Channels ?? 2, bitrate: raw?.bitrate ?? raw?.Bitrate ?? 128000, frameMs: raw?.frameMs ?? raw?.FrameMs ?? 10, supportedFrameMs: supportedFrameMs.length ? supportedFrameMs : [10], updatedAtMs: Number(raw?.updatedAtMs ?? raw?.UpdatedAtMs) || 0, settingsDeviceId: raw?.settingsDeviceId ?? raw?.SettingsDeviceID ?? '' };
 }
 function normalizeDeviceStatus(raw: any): DeviceStatus {
-  return { deviceId: String(raw?.deviceId ?? raw?.DeviceID ?? ''), name: String(raw?.name ?? raw?.Name ?? ''), connected: Boolean(raw?.connected ?? raw?.Connected), message: String(raw?.message ?? raw?.Message ?? ''), bitrate: Number(raw?.bitrate ?? raw?.Bitrate) || 0, frameMs: Number(raw?.frameMs ?? raw?.FrameMs) || 0 };
+  return { deviceId: String(raw?.deviceId ?? raw?.DeviceID ?? ''), name: String(raw?.name ?? raw?.Name ?? ''), connected: Boolean(raw?.connected ?? raw?.Connected), message: String(raw?.message ?? raw?.Message ?? ''), bitrate: Number(raw?.bitrate ?? raw?.Bitrate) || 0, frameMs: Number(raw?.frameMs ?? raw?.FrameMs) || 0, phase: Number(raw?.phase ?? raw?.Phase) || 0 };
+}
+// 旧版接收端不上报校准阶段：停留“检测”超过 6 秒视为已在正常播放。
+const nowTick = ref(Date.now());
+let tickTimer: number | undefined;
+function devicePhase(device: Device): number {
+  const entry = calibration.value[device.id];
+  if (!entry) return 3;
+  if (entry.phase === 0 && nowTick.value - entry.updatedAt > 6000) return 3;
+  return entry.phase;
+}
+function deviceCalibrating(device: Device): boolean {
+  return !!connected.value[device.id] && devicePhase(device) < 3;
+}
+const calibratingCount = computed(() => connectedDevices.value.filter(deviceCalibrating).length);
+const allCalibrated = computed(() => connectedCount.value > 0 && connectedDevices.value.every((device) => devicePhase(device) >= 3));
+watch(allCalibrated, (now, was) => {
+  if (!now || was) return;
+  syncFlash.value = true;
+  window.clearTimeout(syncFlashTimer);
+  syncFlashTimer = window.setTimeout(() => { syncFlash.value = false; }, 2600);
+});
+function showSyncPanel(): boolean { return calibratingCount.value > 0 || (syncFlash.value && connectedCount.value > 1); }
+function syncSummary(): string {
+  return connectedDevices.value.map((device) => `${device.name} 偏差 ${Math.abs(calibration.value[device.id]?.offsetMs ?? 0)} ms`).join(' · ');
 }
 function newer(a: { updatedAtMs: number; deviceId: string }, b: { updatedAtMs: number; deviceId: string }) { return a.updatedAtMs > b.updatedAtMs || (a.updatedAtMs === b.updatedAtMs && a.deviceId > b.deviceId); }
 function touch(next: Partial<Settings>) { settings.value = { ...settings.value, ...next, updatedAtMs: Date.now(), deviceId }; }
@@ -109,9 +138,10 @@ onMounted(async () => {
   try {
     const value: any = await GetStatus();
     const list: any[] = Array.isArray(value?.devices) ? value.devices : Array.isArray(value?.Devices) ? value.Devices : [];
-    for (const item of list) { const entry = normalizeDeviceStatus(item); if (entry.connected && entry.deviceId) connected.value[entry.deviceId] = entry; }
+    for (const item of list) { const entry = normalizeDeviceStatus(item); if (entry.connected && entry.deviceId) { connected.value[entry.deviceId] = entry; calibration.value[entry.deviceId] = { phase: entry.phase, offsetMs: 0, rttMs: 0, updatedAt: Date.now() }; } }
     if (!connectedCount.value) status.value = statusMessage(value, status.value);
   } catch { status.value = '无法获取连接状态'; }
+  tickTimer = window.setInterval(() => { nowTick.value = Date.now(); }, 1000);
   EventsOn('device:found', (raw: any) => { const device = normalizeDevice(raw); if (device.updatedAtMs && newer(device, settings.value)) { settings.value = { ...settings.value, bitrate: device.bitrate, frameMs: device.frameMs, updatedAtMs: device.updatedAtMs, deviceId: device.settingsDeviceId || settings.value.deviceId }; } const index = devices.value.findIndex((item) => item.id === device.id); if (index >= 0) devices.value[index] = device; else devices.value.push(device); });
   EventsOn('device:lost', (raw: any) => {
     const id = String(raw ?? '');
@@ -121,13 +151,25 @@ onMounted(async () => {
   EventsOn('stream:status', (raw: any) => {
     const value = normalizeDeviceStatus(raw);
     if (!value.deviceId) return;
-    if (value.connected) connected.value[value.deviceId] = value;
-    else { delete connected.value[value.deviceId]; if (value.message) status.value = value.message; }
+    if (value.connected) {
+      connected.value[value.deviceId] = value;
+      calibration.value[value.deviceId] = { phase: value.phase, offsetMs: calibration.value[value.deviceId]?.offsetMs ?? 0, rttMs: calibration.value[value.deviceId]?.rttMs ?? 0, updatedAt: Date.now() };
+    } else {
+      delete connected.value[value.deviceId];
+      delete calibration.value[value.deviceId];
+      if (value.message) status.value = value.message;
+    }
+  });
+  EventsOn('calibration:progress', (raw: any) => {
+    const id = String(raw?.deviceId ?? raw?.DeviceID ?? '');
+    if (!id || !connected.value[id]) return;
+    calibration.value[id] = { phase: Math.min(3, Math.max(0, Number(raw?.phase ?? raw?.Phase ?? 0) || 0)), offsetMs: Number(raw?.offsetMs ?? raw?.OffsetMs ?? 0) || 0, rttMs: Number(raw?.rttMs ?? raw?.RttMs ?? 0) || 0, updatedAt: Date.now() };
   });
   EventsOn('conn:request', (raw: any) => { const request: ConnRequest = { requestId: String(raw?.requestId ?? raw?.RequestID ?? ''), deviceId: String(raw?.deviceId ?? raw?.DeviceID ?? ''), name: String(raw?.name ?? raw?.Name ?? '未知设备'), host: String(raw?.host ?? raw?.Host ?? '') }; if (request.requestId && !connRequests.value.some((item) => item.requestId === request.requestId)) connRequests.value = [...connRequests.value, request]; rememberChoice.value = true; });
   EventsOn('conn:cancelled', (requestId: unknown) => { connRequests.value = connRequests.value.filter((item) => item.requestId !== String(requestId)); });
   discover();
 });
+onUnmounted(() => { window.clearInterval(tickTimer); window.clearTimeout(syncFlashTimer); });
 </script>
 
 <template>
@@ -139,9 +181,42 @@ onMounted(async () => {
 
     <section v-if="page === 'devices'">
       <div class="section-head"><div><h2>可用接收端</h2><p>同一局域网内已启动接收服务的设备，可同时连接多台外放</p></div><button @click="discover">重新扫描</button></div>
-      <div v-if="devices.length" class="devices"><article v-for="device in devices" :key="device.id" :class="{ live: connected[device.id] }"><div class="speaker">S</div><div><h3>{{ device.name }}</h3><p>{{ device.host }}:{{ device.port }} · 支持 {{ device.supportedFrameMs.join('/') }} ms<span v-if="deviceInfo(device)" :class="['live-info', { warn: deviceStalled(device) }]"> · {{ deviceInfo(device) }}</span></p></div><button v-if="connected[device.id]" class="secondary" @click="disconnect(device)">断开</button><button v-else-if="connecting[device.id]" class="secondary" disabled>等待确认…</button><button v-else @click="connect(device)">连接</button></article></div>
+      <Transition name="fold">
+        <div v-if="showSyncPanel()" class="sync-panel" :class="{ done: allCalibrated }">
+          <div class="sync-head">
+            <span class="pc-chip">PC</span>
+            <div class="sync-title">
+              <h3>{{ allCalibrated ? '多设备同步完成' : '正在同步校准多台设备' }}</h3>
+              <p>{{ allCalibrated ? '各设备已对齐统一时间基准，回到正常播放' : '正在对齐各设备的播放时钟，校准过程不会产生跳音' }}</p>
+            </div>
+            <span class="wave lg" aria-hidden="true"><i v-for="n in 14" :key="n" :style="{ animationDelay: `${n * 70}ms` }"></i></span>
+          </div>
+          <div class="node-rows">
+            <div v-for="(device, index) in connectedDevices" :key="device.id" class="node-row">
+              <span class="link-line" aria-hidden="true"><i class="pulse" :style="{ animationDelay: `${index * 240}ms` }"></i></span>
+              <span class="node-chip" :class="'phase-' + devicePhase(device)">{{ (device.name.trim()[0] || 'S').toUpperCase() }}</span>
+              <span class="node-meta">
+                <strong>{{ device.name }}</strong>
+                <span :class="{ ok: devicePhase(device) >= 3 }">{{ phaseHints[devicePhase(device)] }}<template v-if="devicePhase(device) >= 2 && calibration[device.id]"> · 偏差 {{ Math.abs(calibration[device.id].offsetMs) }} ms · 往返 {{ calibration[device.id].rttMs }} ms</template></span>
+              </span>
+              <span class="mini-steps" aria-hidden="true"><i v-for="(label, i) in phaseLabels" :key="label" :class="{ active: i === devicePhase(device), done: i < devicePhase(device) }"></i></span>
+            </div>
+          </div>
+        </div>
+      </Transition>
+      <div v-if="devices.length" class="devices"><article v-for="device in devices" :key="device.id" :class="{ live: connected[device.id] }"><div class="speaker">S</div><div><h3>{{ device.name }}</h3><p>{{ device.host }}:{{ device.port }} · 支持 {{ device.supportedFrameMs.join('/') }} ms<span v-if="deviceInfo(device)" :class="['live-info', { warn: deviceStalled(device) }]"> · {{ deviceInfo(device) }}</span></p>
+        <Transition name="fade">
+          <div v-if="connected[device.id] && devicePhase(device) < 3" class="calib-row">
+            <span class="wave" aria-hidden="true"><i v-for="n in 10" :key="n" :style="{ animationDelay: `${n * 80}ms` }"></i></span>
+            <ol class="calib-steps">
+              <li v-for="(label, i) in phaseLabels" :key="label" :class="{ active: i === devicePhase(device), done: i < devicePhase(device) }">{{ label }}</li>
+            </ol>
+            <span class="calib-hint">{{ phaseHints[devicePhase(device)] }}</span>
+          </div>
+        </Transition>
+      </div><button v-if="connected[device.id]" class="secondary" @click="disconnect(device)">断开</button><button v-else-if="connecting[device.id]" class="secondary" disabled>等待确认…</button><button v-else @click="connect(device)">连接</button></article></div>
       <div v-else class="empty"><span class="spinner"></span>正在扫描局域网接收端…<p class="empty-hint">请确认手机端 SteamVoice 已打开并连接到同一 Wi-Fi</p></div>
-      <p v-if="syncBadge" class="sync-note">♪ 多台接收端已按统一时间基准同步播放，自动校准时不会产生跳音</p>
+      <p v-if="connectedCount > 1 && !showSyncPanel() && allCalibrated" class="sync-note">♪ 多台接收端已按统一时间基准同步播放，自动校准时不会产生跳音</p>
     </section>
 
     <section v-else class="settings">
@@ -204,6 +279,51 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .spinner { width: 18px; height: 18px; border: 2px solid #d9dde1; border-top-color: #086d4d; border-radius: 50%; animation: spin 0.9s linear infinite; display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .sync-note { margin-top: 14px; font-size: 13px; color: #086d4d; background: #eaf5f0; border: 1px solid #c8e5d8; padding: 8px 12px; }
+/* ---- 多设备同步校准动画 ---- */
+.sync-panel { border: 1px solid #c8e5d8; background: linear-gradient(180deg, #f2faf6, #eaf5f0); padding: 16px 18px; margin-bottom: 16px; overflow: hidden; }
+.sync-head { display: flex; align-items: center; gap: 14px; }
+.sync-title { flex: 1; min-width: 0; }
+.sync-title h3 { font-size: 16px; margin: 0 0 3px; color: #086d4d; }
+.sync-title p { font-size: 13px; }
+.pc-chip { width: 38px; height: 38px; flex: none; display: grid; place-items: center; border-radius: 10px; background: #172033; color: #f0c75e; font-weight: 800; font-size: 13px; letter-spacing: 0.5px; }
+.node-rows { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+.node-row { display: flex; align-items: center; gap: 12px; }
+.link-line { position: relative; width: 46px; height: 2px; flex: none; background: linear-gradient(90deg, #b7dcc9, #d6ece0); border-radius: 1px; overflow: visible; }
+.link-line .pulse { position: absolute; top: 50%; left: 0; width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px; border-radius: 50%; background: #086d4d; box-shadow: 0 0 6px rgba(8, 109, 77, 0.55); animation: travel 1.5s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
+@keyframes travel { 0% { left: 0; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { left: 100%; opacity: 0; } }
+.node-chip { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 50%; font-size: 13px; font-weight: 700; color: #4d6a60; background: #e3ece8; border: 1.5px solid #c3d7cf; transition: background 0.5s, color 0.5s, border-color 0.5s, box-shadow 0.5s; }
+.node-chip.phase-1 { color: #086d4d; border-color: #4fc08d; }
+.node-chip.phase-2 { color: #086d4d; border-color: #086d4d; box-shadow: 0 0 0 4px rgba(8, 109, 77, 0.12); }
+.node-chip.phase-3 { background: #086d4d; color: #fff; border-color: #086d4d; box-shadow: 0 0 0 5px rgba(8, 109, 77, 0.16); }
+.node-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.node-meta strong { font-size: 14px; }
+.node-meta span { font-size: 12px; color: #687077; }
+.node-meta span.ok { color: #086d4d; }
+.mini-steps { display: flex; gap: 5px; flex: none; }
+.mini-steps i { width: 8px; height: 8px; border-radius: 50%; background: #cfe0d8; border: 1px solid #b7d2c6; transition: background 0.4s, transform 0.4s; }
+.mini-steps i.done { background: #4fc08d; border-color: #4fc08d; }
+.mini-steps i.active { background: #086d4d; border-color: #086d4d; transform: scale(1.25); animation: breathe 1.1s ease-in-out infinite; }
+@keyframes breathe { 50% { box-shadow: 0 0 0 4px rgba(8, 109, 77, 0.15); } }
+.wave { display: inline-flex; align-items: center; gap: 3px; height: 20px; flex: none; }
+.wave i { width: 3px; height: 6px; border-radius: 2px; background: #086d4d; opacity: 0.75; animation: wavebar 1s ease-in-out infinite; }
+.wave.lg { height: 30px; gap: 4px; }
+.wave.lg i { width: 4px; background: #086d4d; }
+@keyframes wavebar { 0%, 100% { transform: scaleY(0.45); } 50% { transform: scaleY(1.9); } }
+.sync-panel.done .wave i, .sync-panel.done .link-line .pulse { animation-play-state: paused; opacity: 0.35; }
+.sync-panel.done .node-chip.phase-3 { animation: settle 0.7s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes settle { 0% { transform: scale(0.6); } 100% { transform: scale(1); } }
+.calib-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.calib-steps { display: flex; gap: 4px; list-style: none; margin: 0; padding: 0; }
+.calib-steps li { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #e8ecee; color: #687077; transition: background 0.4s, color 0.4s; }
+.calib-steps li.done { background: #dcefe6; color: #086d4d; }
+.calib-steps li.active { background: #086d4d; color: #fff; animation: phasepulse 1.2s ease-in-out infinite; }
+@keyframes phasepulse { 50% { box-shadow: 0 0 0 3px rgba(8, 109, 77, 0.18); } }
+.calib-hint { font-size: 11px; color: #687077; }
+.fold-enter-active, .fold-leave-active { transition: opacity 0.5s ease, transform 0.5s ease; }
+.fold-enter-from, .fold-leave-to { opacity: 0; transform: translateY(-6px); }
+.fade-enter-active, .fade-leave-active { transition: opacity 0.6s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .wave i, .link-line .pulse, .mini-steps i.active, .calib-steps li.active, .sync-panel.done .node-chip.phase-3 { animation: none; } }
 .field-hint { font-size: 13px; margin-bottom: 8px; } .muted { color: #687077; font-size: 12px; }
 .authorized { display: flex; flex-direction: column; gap: 6px; } .authorized-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #d9dde1; background: #fff; } .authorized-row .muted { display: block; } .authorized-row div { min-width: 0; } .danger { color: #a24a18; }
 .modal-overlay { position: fixed; inset: 0; background: rgba(23, 32, 51, 0.45); display: grid; place-items: center; z-index: 40; }
@@ -211,11 +331,43 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .modal h3 { margin: 0 0 8px; } .modal-count { font-size: 13px; font-weight: 400; color: #687077; } .modal-device { font-size: 17px; font-weight: 700; margin: 0 0 4px; } .modal .muted { font-size: 13px; margin-bottom: 14px; } .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 :root[data-theme='dark'] .authorized-row { border-color: #3d4a51; background: #202b31; } :root[data-theme='dark'] .modal { background: #202b31; color: #e8edf0; } :root[data-theme='dark'] .modal .muted { color: #b6c1c7; }
 :root[data-theme='dark'] .sync-note { color: #4fc08d; background: #1c2f28; border-color: #2b4a3c; } :root[data-theme='dark'] .spinner { border-color: #3d4a51; border-top-color: #4fc08d; }
+:root[data-theme='dark'] .sync-panel { border-color: #2b4a3c; background: linear-gradient(180deg, #1d2b26, #1a2622); }
+:root[data-theme='dark'] .sync-title h3 { color: #4fc08d; }
+:root[data-theme='dark'] .link-line { background: linear-gradient(90deg, #2f5546, #244034); }
+:root[data-theme='dark'] .link-line .pulse { background: #4fc08d; box-shadow: 0 0 6px rgba(79, 192, 141, 0.55); }
+:root[data-theme='dark'] .node-chip { color: #9db8ad; background: #22302b; border-color: #33503f; }
+:root[data-theme='dark'] .node-chip.phase-1 { color: #4fc08d; border-color: #4fc08d; }
+:root[data-theme='dark'] .node-chip.phase-2 { color: #4fc08d; border-color: #4fc08d; box-shadow: 0 0 0 4px rgba(79, 192, 141, 0.14); }
+:root[data-theme='dark'] .node-chip.phase-3 { background: #086d4d; color: #eafff5; border-color: #4fc08d; box-shadow: 0 0 0 5px rgba(79, 192, 141, 0.18); }
+:root[data-theme='dark'] .node-meta span.ok { color: #4fc08d; }
+:root[data-theme='dark'] .mini-steps i { background: #24352d; border-color: #33503f; }
+:root[data-theme='dark'] .mini-steps i.done { background: #2f6b4f; border-color: #2f6b4f; }
+:root[data-theme='dark'] .mini-steps i.active { background: #4fc08d; border-color: #4fc08d; }
+:root[data-theme='dark'] .wave i { background: #4fc08d; }
+:root[data-theme='dark'] .calib-steps li { background: #242f34; color: #b6c1c7; }
+:root[data-theme='dark'] .calib-steps li.done { background: #1f3a2e; color: #4fc08d; }
+:root[data-theme='dark'] .calib-steps li.active { background: #086d4d; color: #eafff5; }
 @media (prefers-color-scheme: dark) {
   :root[data-theme='system'] .authorized-row { border-color: #3d4a51; background: #202b31; }
   :root[data-theme='system'] .modal { background: #202b31; color: #e8edf0; }
   :root[data-theme='system'] .modal .muted { color: #b6c1c7; }
   :root[data-theme='system'] .sync-note { color: #4fc08d; background: #1c2f28; border-color: #2b4a3c; }
   :root[data-theme='system'] .spinner { border-color: #3d4a51; border-top-color: #4fc08d; }
+  :root[data-theme='system'] .sync-panel { border-color: #2b4a3c; background: linear-gradient(180deg, #1d2b26, #1a2622); }
+  :root[data-theme='system'] .sync-title h3 { color: #4fc08d; }
+  :root[data-theme='system'] .link-line { background: linear-gradient(90deg, #2f5546, #244034); }
+  :root[data-theme='system'] .link-line .pulse { background: #4fc08d; box-shadow: 0 0 6px rgba(79, 192, 141, 0.55); }
+  :root[data-theme='system'] .node-chip { color: #9db8ad; background: #22302b; border-color: #33503f; }
+  :root[data-theme='system'] .node-chip.phase-1 { color: #4fc08d; border-color: #4fc08d; }
+  :root[data-theme='system'] .node-chip.phase-2 { color: #4fc08d; border-color: #4fc08d; box-shadow: 0 0 0 4px rgba(79, 192, 141, 0.14); }
+  :root[data-theme='system'] .node-chip.phase-3 { background: #086d4d; color: #eafff5; border-color: #4fc08d; box-shadow: 0 0 0 5px rgba(79, 192, 141, 0.18); }
+  :root[data-theme='system'] .node-meta span.ok { color: #4fc08d; }
+  :root[data-theme='system'] .mini-steps i { background: #24352d; border-color: #33503f; }
+  :root[data-theme='system'] .mini-steps i.done { background: #2f6b4f; border-color: #2f6b4f; }
+  :root[data-theme='system'] .mini-steps i.active { background: #4fc08d; border-color: #4fc08d; }
+  :root[data-theme='system'] .wave i { background: #4fc08d; }
+  :root[data-theme='system'] .calib-steps li { background: #242f34; color: #b6c1c7; }
+  :root[data-theme='system'] .calib-steps li.done { background: #1f3a2e; color: #4fc08d; }
+  :root[data-theme='system'] .calib-steps li.active { background: #086d4d; color: #eafff5; }
 }
 </style>

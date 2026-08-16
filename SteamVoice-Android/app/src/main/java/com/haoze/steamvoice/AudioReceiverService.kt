@@ -72,6 +72,7 @@ class AudioReceiverService : Service() {
         }
         ConnectionBus.activePc.value = null
         ConnectionBus.authPrompt.value = null
+        ConnectionBus.calibration.value = null
         socket?.close()
         worker?.interrupt()
         registration?.let { nsd?.unregisterService(it) }
@@ -139,6 +140,36 @@ class AudioReceiverService : Service() {
             val expectedBacklog = (player.latencyBudgetNs / lastFrameMsNs).toInt()
             return (buffer.queuedPackets() + player.backlogFrames() - expectedBacklog).coerceAtLeast(0)
         }
+        // 校准阶段：音频已到但时钟未收敛=计算中；收敛后等待/开始写入=同步；
+        // 已写入 AudioTrack=完成。桌面端据此驱动多设备同步校准动画。
+        fun currentSyncState(): Int = when {
+            player.playedFrames > 0L -> SyncState.PLAYING
+            clockSync.hasStableEstimate -> SyncState.ALIGNED
+            received > 0L -> SyncState.CALIBRATING
+            else -> SyncState.UNKNOWN
+        }
+        fun publishCalibration() {
+            val pc = activePc
+            if (pc == null) {
+                if (ConnectionBus.calibration.value != null) ConnectionBus.calibration.value = null
+                return
+            }
+            val state = currentSyncState()
+            val phase = when (state) {
+                SyncState.PLAYING -> CalibrationPhase.DONE
+                SyncState.ALIGNED -> CalibrationPhase.SYNC
+                SyncState.CALIBRATING -> CalibrationPhase.CALCULATE
+                else -> CalibrationPhase.DETECT
+            }
+            val withStats = phase == CalibrationPhase.SYNC || phase == CalibrationPhase.DONE
+            val next = CalibrationState(
+                pcName = pc.name,
+                phase = phase,
+                offsetMs = if (withStats) clockSync.medianOffsetMs() else null,
+                rttMs = if (withStats) clockSync.lastRttMs() else null,
+            )
+            if (ConnectionBus.calibration.value != next) ConnectionBus.calibration.value = next
+        }
         try {
             socket?.soTimeout = 50
             while (!stopRequested && !Thread.currentThread().isInterrupted) {
@@ -190,7 +221,8 @@ class AudioReceiverService : Service() {
                         }
                         ConnectionBus.notify("${gone?.name ?: "电脑"} 连接已中断")
                     }
-                    if (activePc != null && System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate); lastFeedback = System.nanoTime() }
+                    if (activePc != null && System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate, currentSyncState(), clockSync.medianOffsetMs()?.toInt() ?: 0, clockSync.lastRttMs()?.toInt() ?: 0); lastFeedback = System.nanoTime() }
+                    publishCalibration()
                     continue
                 }
                 val control = SettingsControl.decode(datagram.data, datagram.length)
@@ -246,7 +278,8 @@ class AudioReceiverService : Service() {
                         }
                     }
                 }
-                if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate); lastFeedback = System.nanoTime() }
+                if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate, currentSyncState(), clockSync.medianOffsetMs()?.toInt() ?: 0, clockSync.lastRttMs()?.toInt() ?: 0); lastFeedback = System.nanoTime() }
+                publishCalibration()
             }
         } catch (e: Exception) {
             if (!stopRequested) Log.e(TAG, "receiver loop stopped", e)
@@ -370,6 +403,6 @@ class AudioReceiverService : Service() {
         runCatching { getSystemService(NotificationManager::class.java).notify(8, notification(pcName)) }
     }
 
-    private fun sendFeedback(address: InetAddress?, port: Int, session: Long, highest: Long, received: Long, lost: Long, queue: Int, bitrate: Int) { if (address == null || port == 0) return; try { val b=ReceiverFeedback(session, highest, received, lost, queue, bitrate).encode(); socket?.send(DatagramPacket(b,b.size,address,port)) } catch (_: Exception) {} }
+    private fun sendFeedback(address: InetAddress?, port: Int, session: Long, highest: Long, received: Long, lost: Long, queue: Int, bitrate: Int, syncState: Int = SyncState.UNKNOWN, offsetMs: Int = 0, rttMs: Int = 0) { if (address == null || port == 0) return; try { val b=ReceiverFeedback(session, highest, received, lost, queue, bitrate, syncState, offsetMs, rttMs).encode(); socket?.send(DatagramPacket(b,b.size,address,port)) } catch (_: Exception) {} }
     private fun newTrack(): AudioTrack { val min=AudioTrack.getMinBufferSize(48000,AudioFormat.CHANNEL_OUT_STEREO,AudioFormat.ENCODING_PCM_16BIT); check(min > 0) { "AudioTrack buffer size unavailable: $min" }; return AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build()).setAudioFormat(AudioFormat.Builder().setSampleRate(48000).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build()).setBufferSizeInBytes(min * 2).setTransferMode(AudioTrack.MODE_STREAM).build().also { it.play(); Log.i(TAG,"AudioTrack started buffer=$min configured=${min * 2} state=${it.state}") } }
 }

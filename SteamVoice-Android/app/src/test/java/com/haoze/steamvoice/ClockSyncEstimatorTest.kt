@@ -70,4 +70,24 @@ class ClockSyncEstimatorTest {
         estimator.onExchange(t1 = 5_000_000, t2 = 5_000_900, t3 = 5_000_900, t4 = 5_000_000)
         assertEquals(-900L, estimator.mapToLocal(0L))
     }
+
+    @Test
+    fun stableEstimateRequiresEnoughSamples() {
+        val estimator = ClockSyncEstimator(nowNs = { 1_000_000L })
+        estimator.onExchange(t1 = 0, t2 = 1_000, t3 = 2_000, t4 = 3_000)
+        estimator.onExchange(t1 = 10_000, t2 = 11_000, t3 = 12_000, t4 = 13_000)
+        estimator.onExchange(t1 = 20_000, t2 = 21_000, t3 = 22_000, t4 = 23_000)
+        assertFalse("3 个样本尚未收敛", estimator.hasStableEstimate)
+        estimator.onExchange(t1 = 30_000, t2 = 31_000, t3 = 32_000, t4 = 33_000)
+        assertTrue(estimator.hasStableEstimate)
+    }
+
+    @Test
+    fun medianOffsetAndRttReportedInMilliseconds() {
+        val estimator = ClockSyncEstimator(nowNs = { 1_000_000L })
+        // 对端慢 2.5ms（offset=-2.5ms），单程 2ms，往返 4ms。
+        estimator.onExchange(t1 = 10_000_000, t2 = 9_500_000, t3 = 10_500_000, t4 = 15_000_000)
+        assertEquals(-2L, estimator.medianOffsetMs())
+        assertEquals(4L, estimator.lastRttMs())
+    }
 }
