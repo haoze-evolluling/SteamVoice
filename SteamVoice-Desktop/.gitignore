@@ -16,6 +16,7 @@
 /build/windows/*.exe
 /build/windows/*.dll
 /build/windows/*.pdb
+/build/windows/installer/
 
 # Frontend dependencies and generated assets
 /frontend/node_modules/
