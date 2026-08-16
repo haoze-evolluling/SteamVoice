@@ -203,6 +203,7 @@ func (a *App) Shutdown(context.Context) {
 		c.Close()
 	}
 	for _, s := range sessions {
+		_ = s.sender.SendBye(a.store.DeviceID)
 		_ = s.sender.Close()
 	}
 }
@@ -351,6 +352,7 @@ func (a *App) Disconnect(deviceID string) error {
 	if !ok {
 		return nil
 	}
+	_ = session.sender.SendBye(a.store.DeviceID)
 	_ = session.sender.Close()
 	a.emitStatus(DeviceStatus{DeviceID: deviceID, Name: session.device.Name, Message: "已断开连接"})
 	return nil

@@ -20,7 +20,7 @@ const page = ref<'devices' | 'settings'>('devices');
 const devices = ref<Device[]>([]);
 const status = ref('未连接接收端');
 const connected = ref<Record<string, DeviceStatus>>({});
-const connRequest = ref<ConnRequest | null>(null);
+const connRequests = ref<ConnRequest[]>([]);
 const rememberChoice = ref(true);
 const identity = ref<{ deviceId: string; name: string }>({ deviceId: '', name: '' });
 const authorizedDevices = ref<AuthorizedDevice[]>([]);
@@ -75,9 +75,9 @@ async function refreshAuthorized() {
   } catch { authorizedDevices.value = []; }
 }
 async function respondConnection(allow: boolean) {
-  const request = connRequest.value;
+  const request = connRequests.value[0];
   if (!request) return;
-  connRequest.value = null;
+  connRequests.value = connRequests.value.slice(1);
   try {
     await RespondConnection(request.requestId, allow, rememberChoice.value);
     if (allow) status.value = `已允许 ${request.name} 连接`;
@@ -119,8 +119,8 @@ onMounted(async () => {
     if (value.connected) connected.value[value.deviceId] = value;
     else { delete connected.value[value.deviceId]; if (value.message) status.value = value.message; }
   });
-  EventsOn('conn:request', (raw: any) => { connRequest.value = { requestId: String(raw?.requestId ?? raw?.RequestID ?? ''), deviceId: String(raw?.deviceId ?? raw?.DeviceID ?? ''), name: String(raw?.name ?? raw?.Name ?? '未知设备'), host: String(raw?.host ?? raw?.Host ?? '') }; rememberChoice.value = true; });
-  EventsOn('conn:cancelled', (requestId: unknown) => { if (connRequest.value && String(requestId) === connRequest.value.requestId) connRequest.value = null; });
+  EventsOn('conn:request', (raw: any) => { const request: ConnRequest = { requestId: String(raw?.requestId ?? raw?.RequestID ?? ''), deviceId: String(raw?.deviceId ?? raw?.DeviceID ?? ''), name: String(raw?.name ?? raw?.Name ?? '未知设备'), host: String(raw?.host ?? raw?.Host ?? '') }; if (request.requestId && !connRequests.value.some((item) => item.requestId === request.requestId)) connRequests.value = [...connRequests.value, request]; rememberChoice.value = true; });
+  EventsOn('conn:cancelled', (requestId: unknown) => { connRequests.value = connRequests.value.filter((item) => item.requestId !== String(requestId)); });
   discover();
 });
 </script>
@@ -162,11 +162,11 @@ onMounted(async () => {
     </section>
     <footer>{{ connectedCount ? `已连接 ${connectedCount} 台 · ` : '' }}{{ settings.bitrate / 1000 }} kbps · {{ settings.frameMs }} ms · 48 kHz 立体声 Opus · UDP 局域网传输</footer>
 
-    <div v-if="connRequest" class="modal-overlay">
+    <div v-if="connRequests.length" class="modal-overlay">
       <div class="modal" role="dialog" aria-modal="true">
-        <h3>连接请求</h3>
-        <p class="modal-device">{{ connRequest.name }}</p>
-        <p class="muted">{{ connRequest.host }} 想要把这台电脑的音频推送到它上面播放。</p>
+        <h3>连接请求<span v-if="connRequests.length > 1" class="modal-count">（还有 {{ connRequests.length - 1 }} 个待处理）</span></h3>
+        <p class="modal-device">{{ connRequests[0].name }}</p>
+        <p class="muted">{{ connRequests[0].host }} 想要把这台电脑的音频推送到它上面播放。</p>
         <label class="choice"><input v-model="rememberChoice" type="checkbox"><span>以后自动同意该设备</span></label>
         <div class="modal-actions">
           <button class="secondary" @click="respondConnection(false)">拒绝</button>
@@ -203,7 +203,7 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .authorized { display: flex; flex-direction: column; gap: 6px; } .authorized-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #d9dde1; background: #fff; } .authorized-row .muted { display: block; } .authorized-row div { min-width: 0; } .danger { color: #a24a18; }
 .modal-overlay { position: fixed; inset: 0; background: rgba(23, 32, 51, 0.45); display: grid; place-items: center; z-index: 40; }
 .modal { background: #fff; color: #172033; border-radius: 10px; padding: 24px; width: min(420px, calc(100vw - 48px)); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.25); }
-.modal h3 { margin: 0 0 8px; } .modal-device { font-size: 17px; font-weight: 700; margin: 0 0 4px; } .modal .muted { font-size: 13px; margin-bottom: 14px; } .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+.modal h3 { margin: 0 0 8px; } .modal-count { font-size: 13px; font-weight: 400; color: #687077; } .modal-device { font-size: 17px; font-weight: 700; margin: 0 0 4px; } .modal .muted { font-size: 13px; margin-bottom: 14px; } .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 :root[data-theme='dark'] .authorized-row { border-color: #3d4a51; background: #202b31; } :root[data-theme='dark'] .modal { background: #202b31; color: #e8edf0; } :root[data-theme='dark'] .modal .muted { color: #b6c1c7; }
 :root[data-theme='dark'] .sync-note { color: #4fc08d; background: #1c2f28; border-color: #2b4a3c; } :root[data-theme='dark'] .spinner { border-color: #3d4a51; border-top-color: #4fc08d; }
 @media (prefers-color-scheme: dark) {

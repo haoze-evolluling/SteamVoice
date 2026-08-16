@@ -17,7 +17,7 @@ import kotlin.math.min
  */
 class SynchronizedPlayer(
     private val track: AudioTrack,
-    private val latencyBudgetNs: Long = 150_000_000L,
+    val latencyBudgetNs: Long = 150_000_000L,
     private val nowNs: () -> Long = System::nanoTime,
 ) {
     class Frame(val pcm: ByteArray, val tsNs: Long)

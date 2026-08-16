@@ -230,6 +230,19 @@ func (s *Sender) SendPCM(pcm []byte) error {
 	return e
 }
 
+// SendBye tells the receiver the session is over so its UI can disconnect
+// immediately instead of waiting for the audio-silence timeout.
+func (s *Sender) SendBye(selfID string) error {
+	b, err := protocol.EncodeConn(protocol.ConnControl{Kind: protocol.ConnBye, DeviceID: selfID})
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err = s.conn.Write(b)
+	return err
+}
+
 func (s *Sender) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.feedbackDone)

@@ -26,6 +26,7 @@ class AudioReceiverService : Service() {
         const val TAG = "SteamVoiceReceiver"; const val MAX_UDP_PACKET = 65535
         const val AUTH_NOTIFICATION_ID = 9
         const val PROMPT_EXPIRY_MS = 35_000L
+        const val AUDIO_SILENCE_TIMEOUT_NS = 10_000_000_000L
         const val ACTION_RESPOND = "com.haoze.steamvoice.action.RESPOND"
         const val EXTRA_REQUEST_ID = "request_id"; const val EXTRA_ALLOW = "allow"; const val EXTRA_REMEMBER = "remember"
         fun timeSyncIntervalNs(hasEstimate: Boolean): Long = if (hasEstimate) 2_000_000_000L else 250_000_000L
@@ -118,6 +119,7 @@ class AudioReceiverService : Service() {
         var actualBitrate = settings.initialBitrateKbps * 1000
         val clockSync = ClockSyncEstimator()
         var lastTimeSyncSentNs = 0L
+        var lastAudioNs = System.nanoTime()
         var expectedNextTsNs = 0L
         var lastFrameMsNs = 10_000_000L
         val player = SynchronizedPlayer(track)
@@ -126,6 +128,12 @@ class AudioReceiverService : Service() {
         var playerOverflow = 0L
         fun offerToPlayer(pcm: ByteArray, tsNs: Long) {
             if (!player.offer(pcm, tsNs)) playerOverflow++
+        }
+        // 反馈的队列值表示超出同步预算的多余积压，而非总缓冲：
+        // 桌面端以 queue>1 为拥塞信号，直接上报总缓冲会被误判持续降码率。
+        fun queueExcess(): Int {
+            val expectedBacklog = (player.latencyBudgetNs / lastFrameMsNs).toInt()
+            return (buffer.queuedPackets() + player.backlogFrames() - expectedBacklog).coerceAtLeast(0)
         }
         try {
             socket?.soTimeout = 50
@@ -162,7 +170,18 @@ class AudioReceiverService : Service() {
                 val datagram = DatagramPacket(bytes, bytes.size)
                 var gotPacket = true
                 try { socket?.receive(datagram) } catch (_: java.net.SocketTimeoutException) { gotPacket = false }
-                if (!gotPacket) { if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, buffer.queuedPackets(), actualBitrate); lastFeedback = System.nanoTime() }; continue }
+                if (!gotPacket) {
+                    // 无音频超过 10s：电脑端可能异常退出或网络中断，主动清理连接状态。
+                    if (activePc != null && System.nanoTime() - lastAudioNs > AUDIO_SILENCE_TIMEOUT_NS) {
+                        val gone = activePc
+                        activePc = null
+                        ConnectionBus.activePc.value = null
+                        updateForegroundNotification(null)
+                        ConnectionBus.notify("${gone?.name ?: "电脑"} 连接已中断")
+                    }
+                    if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate); lastFeedback = System.nanoTime() }
+                    continue
+                }
                 val control = SettingsControl.decode(datagram.data, datagram.length)
                 if (control != null) {
                     val incoming = AudioSettings(control.bitrateKbps, control.frameMs, control.updatedAtMs, control.deviceId)
@@ -185,6 +204,7 @@ class AudioReceiverService : Service() {
                 val packet = SteamVoiceProtocol.decode(datagram.data, datagram.length)
                 if (packet == null) { Log.w(TAG, "invalid UDP packet length=${datagram.length}"); continue }
                 lastAddress = datagram.address; lastPort = datagram.port
+                lastAudioNs = System.nanoTime()
                 if (activePc!!.port == 0) activePc!!.port = datagram.port
                 if (activeSession != 0L && activeSession != packet.session) { highest = 0; receivedCount = 0; lostCount = 0; fecPending = false; expectedNextTsNs = 0L }
                 activeSession = packet.session
@@ -215,7 +235,7 @@ class AudioReceiverService : Service() {
                         }
                     }
                 }
-                if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, buffer.queuedPackets() + player.backlogFrames(), actualBitrate); lastFeedback = System.nanoTime() }
+                if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate); lastFeedback = System.nanoTime() }
             }
         } catch (e: Exception) {
             if (!stopRequested) Log.e(TAG, "receiver loop stopped", e)
