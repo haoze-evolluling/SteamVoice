@@ -12,4 +12,8 @@ cd frontend; npm install; npm run build; cd ..
 wails dev -tags steamvoice_opus
 ```
 
-Use `wails build -tags steamvoice_opus` for a production executable. Build Wails from a terminal that has the C++ compiler and libopus environment loaded. Without the `steamvoice_opus` build tag the app intentionally reports that the encoder is unavailable.
+Use `build.bat` for a production Windows installer. The script generates an NSIS installer for all users, which installs SteamVoice under `Program Files` and adds normal Windows uninstall metadata. The installation requires administrator permission.
+
+When launched by double-click, `build.bat` keeps the window open so dependency or build errors remain visible. Use `build.bat --no-pause` when invoking it from another script or CI job.
+
+The installer build requires NSIS (`makensis`) on `PATH` in addition to the compiler and libopus prerequisites. Build Wails from a terminal that has the C++ compiler and libopus environment loaded. Without the `steamvoice_opus` build tag the app intentionally reports that the encoder is unavailable.
