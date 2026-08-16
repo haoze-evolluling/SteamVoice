@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"strings"
+	"unicode/utf8"
 )
 
 // ConnControl messages ride the same UDP transport as audio. The side that
@@ -44,7 +45,12 @@ func EncodeConn(c ConnControl) ([]byte, error) {
 	}
 	name := strings.TrimRight(c.Name, "\x00")
 	if len(name) > MaxDeviceNameLen {
-		name = name[:MaxDeviceNameLen]
+		// Cut on a rune boundary so the truncated name stays valid UTF-8.
+		end := MaxDeviceNameLen
+		for end > 0 && !utf8.RuneStart(name[end]) {
+			end--
+		}
+		name = name[:end]
 	}
 	body := id
 	switch c.Kind {

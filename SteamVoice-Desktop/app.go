@@ -417,18 +417,21 @@ func (a *App) RespondConnection(requestID string, allow bool, remember bool) err
 // authorization modal.
 func (a *App) onConnRequest(peer gateway.Peer) {
 	a.mu.Lock()
-	_, streaming := a.sessions[peer.DeviceID]
+	session, streaming := a.sessions[peer.DeviceID]
 	trusted := a.store.IsAuthorized(peer.DeviceID)
 	if streaming || trusted {
+		// Request retransmissions must not churn the live session; only
+		// rebuild it when the peer shows up from a different address.
+		sameAddress := streaming && session.device.Host == peer.Addr.IP.String()
 		a.mu.Unlock()
 		if err := a.listener.Respond(peer, true); err != nil {
 			log.Printf("responding to %s failed: %v", peer.DeviceID, err)
 			return
 		}
-		if streaming {
+		if !sameAddress {
 			go func() {
 				if err := a.Connect(a.deviceFromPeer(peer)); err != nil {
-					log.Printf("reconnect to %s failed: %v", peer.DeviceID, err)
+					log.Printf("inbound connect to %s failed: %v", peer.DeviceID, err)
 				}
 			}()
 		}
