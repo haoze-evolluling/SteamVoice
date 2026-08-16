@@ -8,14 +8,15 @@ import (
 )
 
 type Device struct {
-	Name, Host string
-	Port       int
-	ID         string
-	Codec      string
-	SampleRate int
-	Channels   int
-	Bitrate    int
-	FrameMs    int
+	Name, Host       string
+	Port             int
+	ID               string
+	Codec            string
+	SampleRate       int
+	Channels         int
+	Bitrate          int
+	FrameMs          int
+	SupportedFrameMs []int
 }
 
 // SupportsOpus reports whether the receiver advertised the v2 codec.
@@ -61,7 +62,16 @@ func (b *Browser) Start(parent context.Context) error {
 				}
 				return fallback
 			}
-			b.onDevice(Device{Name: name, Host: host, Port: e.Port, ID: e.Instance, Codec: values["codec"], SampleRate: number("sample_rate", 48000), Channels: number("channels", 2), Bitrate: number("bitrate", 128000), FrameMs: number("frame_ms", 20)})
+			frameOptions := []int{}
+			for _, raw := range strings.Split(values["frame_ms"], ",") {
+				if n, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && (n == 10 || n == 20) {
+					frameOptions = append(frameOptions, n)
+				}
+			}
+			if len(frameOptions) == 0 {
+				frameOptions = []int{10}
+			}
+			b.onDevice(Device{Name: name, Host: host, Port: e.Port, ID: e.Instance, Codec: values["codec"], SampleRate: number("sample_rate", 48000), Channels: number("channels", 2), Bitrate: number("bitrate", 128000), FrameMs: frameOptions[0], SupportedFrameMs: frameOptions})
 		}
 	}()
 	return b.resolver.Browse(ctx, "_steamvoice._udp", "local.", entries)

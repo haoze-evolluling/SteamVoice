@@ -3,6 +3,7 @@
 package capture
 
 import (
+	"fmt"
 	"log"
 	"sync"
 
@@ -15,9 +16,13 @@ type Loopback struct {
 	once   sync.Once
 }
 
-const frameBytes = 480 * 2 * 2
+const bytesPerSample = 2
 
-func Start(onPCM func([]byte)) (*Loopback, error) {
+func Start(frameMs int, onPCM func([]byte)) (*Loopback, error) {
+	if frameMs != 10 && frameMs != 20 {
+		return nil, fmt.Errorf("unsupported frame duration: %d ms", frameMs)
+	}
+	frameBytes := 480 * frameMs / 10 * 2 * bytesPerSample
 	ctx, err := malgo.InitContext([]malgo.Backend{malgo.BackendWasapi}, malgo.ContextConfig{}, nil)
 	if err != nil {
 		return nil, err

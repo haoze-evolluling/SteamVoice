@@ -28,3 +28,14 @@ func TestEncodedAudioFormatUsesBigEndianFields(t *testing.T) {
 		t.Fatalf("bitrate = %d", got)
 	}
 }
+
+func TestRoundTripTwentyMillisecondFrame(t *testing.T) {
+	b, err := Encode(Header{Session: 4, FrameMilliseconds: 20}, []byte{9, 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, got, err := Decode(b)
+	if err != nil || h.FrameMilliseconds != 20 || string(got) != string([]byte{9, 8}) {
+		t.Fatalf("decoded %#v %v %v", h, got, err)
+	}
+}

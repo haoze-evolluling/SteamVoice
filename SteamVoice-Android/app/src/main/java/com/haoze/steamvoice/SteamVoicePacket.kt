@@ -31,6 +31,7 @@ object SteamVoiceProtocol {
     const val sampleRate = 48000
     const val channels = 2
     const val frameMilliseconds = 10
+    val supportedFrameMilliseconds = setOf(10, 20)
     private const val headerSize = 32
     fun decode(data: ByteArray, length: Int): SteamVoicePacket? {
         if (length < headerSize || data.copyOfRange(0, 4).decodeToString() != "SV01" || data[4].toInt() != version || data[5].toInt() != codecOpus) return null
@@ -40,7 +41,7 @@ object SteamVoiceProtocol {
         val bitrate = buffer.getInt(12)
         val payloadLength = buffer.getShort(24).toInt() and 0xffff
         val frameMs = buffer.getShort(26).toInt() and 0xffff
-        if (rate != sampleRate || channelCount != channels || frameMs != frameMilliseconds) return null
+        if (rate != sampleRate || channelCount != channels || frameMs !in supportedFrameMilliseconds) return null
         if (payloadLength + headerSize != length) return null
         val session = buffer.getInt(16).toLong() and 0xffffffffL
         val sequence = buffer.getInt(20).toLong() and 0xffffffffL

@@ -70,7 +70,7 @@ func Decode(b []byte) (Header, []byte, error) {
 		return Header{}, nil, errors.New("invalid SteamVoice v2 packet")
 	}
 	h := Header{Codec: b[5], SampleRate: binary.BigEndian.Uint32(b[6:]), Channels: b[10], Bitrate: binary.BigEndian.Uint32(b[12:]), Session: binary.BigEndian.Uint32(b[16:]), Sequence: binary.BigEndian.Uint32(b[20:]), PayloadLength: binary.BigEndian.Uint16(b[24:]), FrameMilliseconds: binary.BigEndian.Uint16(b[26:]), Flags: b[28]}
-	if h.SampleRate != SampleRate || h.Channels != Channels || h.FrameMilliseconds != FrameMillisecondsV3 {
+	if h.SampleRate != SampleRate || h.Channels != Channels || (h.FrameMilliseconds != 10 && h.FrameMilliseconds != 20) {
 		return Header{}, nil, errors.New("unsupported audio format")
 	}
 	n := int(h.PayloadLength)

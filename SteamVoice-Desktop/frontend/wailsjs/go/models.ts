@@ -10,6 +10,7 @@ export namespace main {
 	    Channels: number;
 	    Bitrate: number;
 	    FrameMs: number;
+	    SupportedFrameMs: number[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Device(source);
@@ -26,6 +27,7 @@ export namespace main {
 	        this.Channels = source["Channels"];
 	        this.Bitrate = source["Bitrate"];
 	        this.FrameMs = source["FrameMs"];
+	        this.SupportedFrameMs = source["SupportedFrameMs"];
 	    }
 	}
 	export class Status {

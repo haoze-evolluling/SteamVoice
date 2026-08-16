@@ -15,14 +15,15 @@ import (
 )
 
 type Device struct {
-	Name, Host string
-	Port       int
-	ID         string
-	Codec      string
-	SampleRate int
-	Channels   int
-	Bitrate    int
-	FrameMs    int
+	Name, Host       string
+	Port             int
+	ID               string
+	Codec            string
+	SampleRate       int
+	Channels         int
+	Bitrate          int
+	FrameMs          int
+	SupportedFrameMs []int
 }
 type Status struct {
 	Connected bool
@@ -39,7 +40,9 @@ type App struct {
 	status     Status
 }
 
-func NewApp() *App                         { return &App{} }
+func NewApp() *App {
+	return &App{status: Status{Message: "未连接接收端"}}
+}
 func (a *App) Startup(ctx context.Context) { a.ctx = ctx }
 func (a *App) Shutdown(context.Context)    { _ = a.Disconnect() }
 func (a *App) DiscoverDevices() ([]Device, error) {
@@ -47,7 +50,7 @@ func (a *App) DiscoverDevices() ([]Device, error) {
 		a.discoverer.Close()
 	}
 	b, err := discovery.NewBrowser(func(d discovery.Device) {
-		runtime.EventsEmit(a.ctx, "device:found", Device{Name: d.Name, Host: d.Host, Port: d.Port, ID: d.ID, Codec: d.Codec, SampleRate: d.SampleRate, Channels: d.Channels, Bitrate: d.Bitrate, FrameMs: d.FrameMs})
+		runtime.EventsEmit(a.ctx, "device:found", Device{Name: d.Name, Host: d.Host, Port: d.Port, ID: d.ID, Codec: d.Codec, SampleRate: d.SampleRate, Channels: d.Channels, Bitrate: d.Bitrate, FrameMs: d.FrameMs, SupportedFrameMs: d.SupportedFrameMs})
 	})
 	if err != nil {
 		return nil, err
@@ -70,14 +73,36 @@ func (a *App) Connect(device Device) error {
 	if bitrate == 0 {
 		bitrate = 128000
 	}
+	if bitrate != 64000 && bitrate != 96000 && bitrate != 128000 && bitrate != 192000 {
+		return fmt.Errorf("unsupported bitrate: %d", bitrate)
+	}
+	frameMs := device.FrameMs
+	if frameMs == 0 {
+		frameMs = 10
+	}
+	if frameMs != 10 && frameMs != 20 {
+		return fmt.Errorf("unsupported frame duration: %d ms", frameMs)
+	}
+	if len(device.SupportedFrameMs) > 0 {
+		supported := false
+		for _, value := range device.SupportedFrameMs {
+			if value == frameMs {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return fmt.Errorf("receiver does not support %d ms audio frames", frameMs)
+		}
+	}
 	if !strings.EqualFold(device.Codec, "opus") {
 		return fmt.Errorf("receiver does not support Opus (codec=%s)", device.Codec)
 	}
-	s, err := stream.NewSender(fmt.Sprintf("%s:%d", device.Host, device.Port), bitrate)
+	s, err := stream.NewSender(fmt.Sprintf("%s:%d", device.Host, device.Port), bitrate, frameMs)
 	if err != nil {
 		return err
 	}
-	encoder, err := codec.NewOpusEncoder(bitrate)
+	encoder, err := codec.NewOpusEncoder(bitrate, frameMs)
 	if err != nil {
 		_ = s.Close()
 		return fmt.Errorf("初始化 Opus 编码器失败: %w", err)
@@ -90,7 +115,7 @@ func (a *App) Connect(device Device) error {
 	a.mu.Lock()
 	a.sender = s
 	a.mu.Unlock()
-	c, err := capture.Start(func(pcm []byte) {
+	c, err := capture.Start(frameMs, func(pcm []byte) {
 		a.mu.Lock()
 		sender := a.sender
 		a.mu.Unlock()

@@ -3,6 +3,7 @@ package stream
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"steamvoice-desktop/internal/protocol"
 	"sync"
@@ -23,7 +24,7 @@ type Sender struct {
 	onBitrate    func(int)
 }
 
-func NewSender(address string, bitrate ...int) (*Sender, error) {
+func NewSender(address string, args ...int) (*Sender, error) {
 	a, e := net.ResolveUDPAddr("udp", address)
 	if e != nil {
 		return nil, e
@@ -35,10 +36,18 @@ func NewSender(address string, bitrate ...int) (*Sender, error) {
 	var raw [4]byte
 	_, _ = rand.Read(raw[:])
 	br := 128000
-	if len(bitrate) > 0 && bitrate[0] > 0 {
-		br = bitrate[0]
+	if len(args) > 0 && args[0] > 0 {
+		br = args[0]
 	}
-	s := &Sender{conn: c, session: binary.BigEndian.Uint32(raw[:]), bitrate: uint32(br), frameMs: protocol.FrameMillisecondsV3, feedbackDone: make(chan struct{})}
+	frameMs := 10
+	if len(args) > 1 && args[1] > 0 {
+		frameMs = args[1]
+	}
+	if frameMs != 10 && frameMs != 20 {
+		_ = c.Close()
+		return nil, fmt.Errorf("unsupported frame duration: %d ms", frameMs)
+	}
+	s := &Sender{conn: c, session: binary.BigEndian.Uint32(raw[:]), bitrate: uint32(br), frameMs: uint16(frameMs), feedbackDone: make(chan struct{})}
 	s.feedbackWG.Add(1)
 	go s.feedbackLoop()
 	return s, nil

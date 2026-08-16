@@ -11,21 +11,25 @@ import (
 )
 
 const (
-	SampleRate   = 48000
-	Channels     = 2
-	FrameSamples = 480
-	MinBitrate   = 48000
-	MaxBitrate   = 192000
-	BitrateStep  = 16000
+	SampleRate     = 48000
+	Channels       = 2
+	FrameSamples10 = 480
+	MinBitrate     = 48000
+	MaxBitrate     = 192000
+	BitrateStep    = 16000
 )
 
 type OpusEncoder struct {
-	encoder *opus.Encoder
-	bitrate int
-	mu      sync.Mutex
+	encoder      *opus.Encoder
+	bitrate      int
+	frameSamples int
+	mu           sync.Mutex
 }
 
-func NewOpusEncoder(bitrate int) (*OpusEncoder, error) {
+func NewOpusEncoder(bitrate int, frameMs int) (*OpusEncoder, error) {
+	if frameMs != 10 && frameMs != 20 {
+		return nil, fmt.Errorf("unsupported frame duration: %d ms", frameMs)
+	}
 	bitrate = ClampBitrate(bitrate)
 	e, err := opus.NewEncoder(SampleRate, Channels, opus.AppAudio)
 	if err != nil {
@@ -36,7 +40,7 @@ func NewOpusEncoder(bitrate int) (*OpusEncoder, error) {
 			return nil, fmt.Errorf("configure opus: %w", err)
 		}
 	}
-	return &OpusEncoder{encoder: e, bitrate: bitrate}, nil
+	return &OpusEncoder{encoder: e, bitrate: bitrate, frameSamples: FrameSamples10 * frameMs / 10}, nil
 }
 
 func ClampBitrate(b int) int {
@@ -65,10 +69,10 @@ func (e *OpusEncoder) Bitrate() int { e.mu.Lock(); defer e.mu.Unlock(); return e
 func (e *OpusEncoder) EncodePCM(frame []byte) ([]byte, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if len(frame) != FrameSamples*Channels*2 {
-		return nil, fmt.Errorf("opus frame must be %d bytes, got %d", FrameSamples*Channels*2, len(frame))
+	if len(frame) != e.frameSamples*Channels*2 {
+		return nil, fmt.Errorf("opus frame must be %d bytes, got %d", e.frameSamples*Channels*2, len(frame))
 	}
-	pcm := make([]int16, FrameSamples*Channels)
+	pcm := make([]int16, e.frameSamples*Channels)
 	for i := range pcm {
 		pcm[i] = int16(binary.LittleEndian.Uint16(frame[i*2:]))
 	}
