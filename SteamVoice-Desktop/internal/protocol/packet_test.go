@@ -39,3 +39,28 @@ func TestRoundTripTwentyMillisecondFrame(t *testing.T) {
 		t.Fatalf("decoded %#v %v %v", h, got, err)
 	}
 }
+
+func TestTimestampRoundTrip(t *testing.T) {
+	b, err := Encode(Header{TimestampNs: 1234567890123}, []byte{7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _, err := Decode(b)
+	if err != nil || h.TimestampNs != 1234567890123 {
+		t.Fatalf("timestamp=%d err=%v", h.TimestampNs, err)
+	}
+	if len(b) != HeaderSize+1 {
+		t.Fatalf("header size drift: %d", len(b))
+	}
+}
+
+func TestDecodeRejectsV3Packets(t *testing.T) {
+	b, err := Encode(Header{TimestampNs: 5}, []byte{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b[4] = 3
+	if _, _, err := Decode(b); err == nil {
+		t.Fatal("stale protocol version accepted")
+	}
+}

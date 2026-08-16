@@ -5,11 +5,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import java.net.InetAddress
 import java.util.concurrent.ConcurrentLinkedQueue
 
-/** 当前正在向本机推送音频的电脑。 */
+/** 当前正在向本机推送音频的电脑。port 为发送方 socket 端口，用于时钟同步。 */
 data class ActivePc(
     val deviceId: String,
     val name: String,
     val address: InetAddress,
+    var port: Int = 0,
 )
 
 /** 等待用户决定的电脑连接请求。 */

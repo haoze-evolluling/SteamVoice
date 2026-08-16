@@ -73,3 +73,28 @@ func TestDecodeConnRejectsForeignDatagrams(t *testing.T) {
 		}
 	}
 }
+
+func TestTimeSyncRoundTrip(t *testing.T) {
+	req := EncodeTimeSync(TimeSync{Kind: TimeSyncRequest, T1: 111})
+	parsed, err := DecodeTimeSync(req)
+	if err != nil || parsed.Kind != TimeSyncRequest || parsed.T1 != 111 || parsed.T2 != 0 || parsed.T3 != 0 {
+		t.Fatalf("request=%+v err=%v", parsed, err)
+	}
+	resp := EncodeTimeSync(TimeSync{Kind: TimeSyncResponse, T1: 111, T2: 222, T3: 333})
+	parsed, err = DecodeTimeSync(resp)
+	if err != nil || parsed.Kind != TimeSyncResponse || parsed.T1 != 111 || parsed.T2 != 222 || parsed.T3 != 333 {
+		t.Fatalf("response=%+v err=%v", parsed, err)
+	}
+}
+
+func TestDecodeTimeSyncRejectsForeign(t *testing.T) {
+	for _, bad := range [][]byte{
+		[]byte("SVTS"),
+		append([]byte("SVTS\x03\x01\x00\x00"), make([]byte, 34)...),
+		append([]byte("SVTS\x04\x09\x00\x00"), make([]byte, 32)...),
+	} {
+		if _, err := DecodeTimeSync(bad); err == nil {
+			t.Fatalf("accepted %q", bad[:6])
+		}
+	}
+}

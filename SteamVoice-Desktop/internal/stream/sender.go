@@ -26,6 +26,8 @@ type Sender struct {
 	onBitrate    func(int)
 	lastFeedback time.Time
 	connResult   chan protocol.ConnControl
+	created      time.Time
+	now          func() uint64
 }
 
 func NewSender(address string, args ...int) (*Sender, error) {
@@ -51,10 +53,28 @@ func NewSender(address string, args ...int) (*Sender, error) {
 		_ = c.Close()
 		return nil, fmt.Errorf("unsupported frame duration: %d ms", frameMs)
 	}
-	s := &Sender{conn: c, session: binary.BigEndian.Uint32(raw[:]), bitrate: uint32(br), frameMs: uint16(frameMs), feedbackDone: make(chan struct{}), lastFeedback: time.Now(), connResult: make(chan protocol.ConnControl, 1)}
+	s := &Sender{conn: c, session: binary.BigEndian.Uint32(raw[:]), bitrate: uint32(br), frameMs: uint16(frameMs), feedbackDone: make(chan struct{}), lastFeedback: time.Now(), connResult: make(chan protocol.ConnControl, 1), created: time.Now()}
 	s.feedbackWG.Add(1)
 	go s.feedbackLoop()
 	return s, nil
+}
+
+// SetClock installs the stream timebase used for audio timestamps and
+// time-sync responses. Without it the sender counts from its own creation.
+func (s *Sender) SetClock(fn func() uint64) {
+	s.mu.Lock()
+	s.now = fn
+	s.mu.Unlock()
+}
+
+func (s *Sender) clockNow() uint64 {
+	s.mu.Lock()
+	fn := s.now
+	s.mu.Unlock()
+	if fn != nil {
+		return fn()
+	}
+	return uint64(time.Since(s.created))
 }
 
 func (s *Sender) SetBitrateCallback(fn func(int)) { s.mu.Lock(); s.onBitrate = fn; s.mu.Unlock() }
@@ -128,6 +148,12 @@ func (s *Sender) feedbackLoop() {
 			}
 			continue
 		}
+		if ts, err := protocol.DecodeTimeSync(buf[:n]); err == nil && ts.Kind == protocol.TimeSyncRequest {
+			t2 := s.clockNow()
+			resp := protocol.EncodeTimeSync(protocol.TimeSync{Kind: protocol.TimeSyncResponse, T1: ts.T1, T2: t2, T3: s.clockNow()})
+			_, _ = s.conn.Write(resp)
+			continue
+		}
 		f, err := protocol.DecodeFeedback(buf[:n])
 		if err != nil || f.Session != s.session {
 			continue
@@ -179,11 +205,12 @@ func clamp(b int) int {
 	return minBitrate + ((b-minBitrate+8000)/16000)*16000
 }
 
-// SendOpus sends one already encoded 20 ms Opus frame.
-func (s *Sender) SendOpus(opus []byte) error {
+// SendOpus sends one already encoded Opus frame stamped with tsNs, the
+// capture time of the frame's first sample in the stream timebase.
+func (s *Sender) SendOpus(tsNs uint64, opus []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, e := protocol.Encode(protocol.Header{Codec: protocol.CodecOpus, Bitrate: s.bitrate, Session: s.session, Sequence: s.seq, FrameMilliseconds: s.frameMs, Flags: protocol.FlagFEC | protocol.FlagDTX}, opus)
+	b, e := protocol.Encode(protocol.Header{Codec: protocol.CodecOpus, Bitrate: s.bitrate, Session: s.session, Sequence: s.seq, FrameMilliseconds: s.frameMs, Flags: protocol.FlagFEC | protocol.FlagDTX, TimestampNs: tsNs}, opus)
 	if e == nil {
 		_, e = s.conn.Write(b)
 		s.seq++

@@ -28,6 +28,7 @@ class AudioReceiverService : Service() {
         const val PROMPT_EXPIRY_MS = 35_000L
         const val ACTION_RESPOND = "com.haoze.steamvoice.action.RESPOND"
         const val EXTRA_REQUEST_ID = "request_id"; const val EXTRA_ALLOW = "allow"; const val EXTRA_REMEMBER = "remember"
+        fun timeSyncIntervalNs(hasEstimate: Boolean): Long = if (hasEstimate) 2_000_000_000L else 250_000_000L
     }
 
     @Volatile private var stopRequested = false
@@ -115,6 +116,8 @@ class AudioReceiverService : Service() {
         var highest = 0L; var receivedCount = 0L; var lostCount = 0L; var lastFeedback = System.nanoTime()
         var fecPending = false
         var actualBitrate = settings.initialBitrateKbps * 1000
+        val clockSync = ClockSyncEstimator()
+        var lastTimeSyncSentNs = 0L
         try {
             socket?.soTimeout = 50
             while (!stopRequested && !Thread.currentThread().isInterrupted) {
@@ -138,6 +141,15 @@ class AudioReceiverService : Service() {
                     }
                 }
                 expirePrompts()
+                // 周期性时钟同步：多设备对齐播放的基础。
+                val syncTarget = activePc
+                if (syncTarget != null && syncTarget.port != 0 && System.nanoTime() - lastTimeSyncSentNs > timeSyncIntervalNs(clockSync.hasEstimate)) {
+                    runCatching {
+                        val request = TimeSyncControl(TimeSyncControl.KIND_REQUEST, System.nanoTime(), 0, 0).encode()
+                        socket?.send(DatagramPacket(request, request.size, syncTarget.address, syncTarget.port))
+                    }
+                    lastTimeSyncSentNs = System.nanoTime()
+                }
                 val datagram = DatagramPacket(bytes, bytes.size)
                 var gotPacket = true
                 try { socket?.receive(datagram) } catch (_: java.net.SocketTimeoutException) { gotPacket = false }
@@ -150,6 +162,13 @@ class AudioReceiverService : Service() {
                 }
                 val conn = ConnControl.decode(datagram.data, datagram.length)
                 if (conn != null) { handleConnControl(conn, datagram, trust); continue }
+                val timeSync = TimeSyncControl.decode(datagram.data, datagram.length)
+                if (timeSync != null) {
+                    if (timeSync.kind == TimeSyncControl.KIND_RESPONSE) {
+                        clockSync.onExchange(timeSync.t1, timeSync.t2, timeSync.t3, System.nanoTime())
+                    }
+                    continue
+                }
                 received++
                 // 音频门控：只播放已授权发送方的数据。
                 val authorized = activePc != null && datagram.address == activePc!!.address
@@ -157,6 +176,7 @@ class AudioReceiverService : Service() {
                 val packet = SteamVoiceProtocol.decode(datagram.data, datagram.length)
                 if (packet == null) { Log.w(TAG, "invalid UDP packet length=${datagram.length}"); continue }
                 lastAddress = datagram.address; lastPort = datagram.port
+                if (activePc!!.port == 0) activePc!!.port = datagram.port
                 if (activeSession != 0L && activeSession != packet.session) { highest = 0; receivedCount = 0; lostCount = 0; fecPending = false }
                 activeSession = packet.session
                 actualBitrate = packet.bitrate
@@ -194,7 +214,7 @@ class AudioReceiverService : Service() {
                 val trusted = runBlocking { trust.isTrusted(conn.deviceId) }
                 if (activePc?.deviceId == conn.deviceId || trusted) {
                     respondConn(datagram.address, datagram.port, allow = true)
-                    adoptPc(ActivePc(conn.deviceId, name, datagram.address))
+                    adoptPc(ActivePc(conn.deviceId, name, datagram.address, datagram.port))
                 } else {
                     val requestId = java.util.UUID.randomUUID().toString().replace("-", "").take(16)
                     val prompt = PcAuthPrompt(requestId, conn.deviceId, name, datagram.address.hostAddress ?: "", System.currentTimeMillis())
@@ -223,7 +243,7 @@ class AudioReceiverService : Service() {
         respondConn(record.address, record.port, decision.second)
         if (decision.second) {
             if (decision.third) runBlocking { PcTrustRepository(applicationContext).trust(record.prompt.deviceId, record.prompt.name) }
-            adoptPc(ActivePc(record.prompt.deviceId, record.prompt.name, record.address))
+            adoptPc(ActivePc(record.prompt.deviceId, record.prompt.name, record.address, record.port))
         }
     }
 

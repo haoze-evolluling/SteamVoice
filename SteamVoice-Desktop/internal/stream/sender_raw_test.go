@@ -2,6 +2,7 @@ package stream
 
 import (
 	"net"
+	"steamvoice-desktop/internal/protocol"
 	"testing"
 	"time"
 )
@@ -25,7 +26,7 @@ func TestRequestConnectionAcceptsRawResponse(t *testing.T) {
 				id := []byte("receiver-echo")
 				out := make([]byte, 8+len(id)+2)
 				copy(out, "SVCR")
-				out[4] = 3
+				out[4] = protocol.Version
 				out[5] = 2
 				copy(out[8:], id)
 				out[8+len(id)] = 0

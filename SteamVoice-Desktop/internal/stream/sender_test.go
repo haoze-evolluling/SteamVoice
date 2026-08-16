@@ -19,7 +19,7 @@ func TestSenderAddsConfiguredBitrate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sender.Close()
-	if err = sender.SendOpus([]byte{0xf8, 0xff}); err != nil {
+	if err = sender.SendOpus(0, []byte{0xf8, 0xff}); err != nil {
 		t.Fatal(err)
 	}
 	if err = listener.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -80,7 +80,7 @@ func TestFeedbackIdleResetsOnFeedback(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sender.Close()
-	if err = sender.SendOpus([]byte{0xf8, 0xff}); err != nil {
+	if err = sender.SendOpus(0, []byte{0xf8, 0xff}); err != nil {
 		t.Fatal(err)
 	}
 	_ = listener.SetReadDeadline(time.Now().Add(time.Second))
