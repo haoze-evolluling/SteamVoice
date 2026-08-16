@@ -171,18 +171,24 @@ private fun ReceiverScreen(
 
     Scaffold(
         topBar = {
-            Column(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 20.dp, vertical = 12.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Column {
-                        Text("SteamVoice", style = MaterialTheme.typography.headlineSmall)
-                        Text(
-                            if (receiverRunning) "接收服务运行中 · 电脑可直接连接本机" else "正在启动接收服务…",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "设置") }
+            Row(
+                Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 20.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Text("SteamVoice", style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        when {
+                            activePc != null -> "正在接收 ${activePc?.name} 的音频"
+                            receiverRunning -> "接收服务运行中 · 等待电脑连接"
+                            else -> "正在启动接收服务…"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
+                IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "设置") }
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -193,13 +199,20 @@ private fun ReceiverScreen(
             LazyColumn(
                 Modifier.fillMaxSize().padding(padding).navigationBarsPadding(),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp),
             ) {
                 item {
-                    Text(
-                        "附近的电脑",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(start = 20.dp, top = 4.dp, bottom = 2.dp),
-                    )
+                    Row(
+                        Modifier.padding(start = 20.dp, top = 4.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("附近的电脑", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        Text(
+                            "${devices.size} 台",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 items(devices, key = { it.deviceId }) { pc ->
                     // 实际连接状态以接收服务的活动发送方为准。
@@ -268,44 +281,54 @@ private fun PcAuthDialog(prompt: PcAuthPrompt, onRespond: (allow: Boolean, remem
 @Composable
 private fun EmptyDevices(modifier: Modifier = Modifier) {
     Box(modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Icon(Icons.Default.Computer, null, modifier = Modifier.size(44.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.size(72.dp)) {
+                Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Computer, null, modifier = Modifier.size(34.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
             Text("正在搜索附近的电脑", style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
             Text(
-                "请确认电脑端 SteamVoice 正在运行，且手机和电脑连接到同一局域网。",
+                "请确认电脑端 SteamVoice 正在运行，且手机和电脑连接到同一 Wi-Fi 网络。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
-            CircularProgressIndicator(Modifier.size(22.dp).padding(top = 6.dp), strokeWidth = 2.dp)
+            CircularProgressIndicator(Modifier.size(20.dp).padding(top = 8.dp), strokeWidth = 2.dp)
         }
     }
 }
 
 @Composable
 private fun PcCard(pc: PcDevice, state: PcConnectionState, onConnect: () -> Unit, onDisconnect: () -> Unit) {
-    Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+    val connected = state == PcConnectionState.CONNECTED
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = if (connected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+    ) {
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Computer, null, tint = MaterialTheme.colorScheme.primary)
+            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surface, modifier = Modifier.size(42.dp)) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.Default.Computer, null, tint = if (connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
             Spacer(Modifier.padding(horizontal = 12.dp))
             Column(Modifier.weight(1f)) {
                 Text(pc.name, style = MaterialTheme.typography.titleMedium)
+                Text(pc.host, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     StateDot(state)
                     Text(
                         state.label(),
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Text(pc.host, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (state == PcConnectionState.CONNECTED) {
-                OutlinedButton(onClick = onDisconnect) { Text("断开") }
-            } else if (state == PcConnectionState.CONNECTING) {
-                CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 2.dp)
-            } else {
-                Button(onClick = onConnect) { Text("连接") }
+            when (state) {
+                PcConnectionState.CONNECTED -> OutlinedButton(onClick = onDisconnect) { Text("断开") }
+                PcConnectionState.CONNECTING -> CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 2.dp)
+                PcConnectionState.ONLINE -> Button(onClick = onConnect) { Text("连接") }
             }
         }
     }
@@ -356,7 +379,7 @@ class SettingsActivity : ComponentActivity() {
 private fun SettingsScreen(settings: AudioSettings, repository: SettingsRepository, trustRepository: PcTrustRepository, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val trustedPcs by trustRepository.trusted.collectAsState(initial = emptyMap())
-    Scaffold(topBar = { Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().statusBarsPadding()) { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }; Text("设置", style = MaterialTheme.typography.titleLarge) } }) { padding ->
+    Scaffold(topBar = { Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(end = 16.dp)) { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }; Text("设置", style = MaterialTheme.typography.titleLarge) } }) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
@@ -364,70 +387,82 @@ private fun SettingsScreen(settings: AudioSettings, repository: SettingsReposito
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
-            Text("初始发送码率", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(10.dp))
-            SettingsGroup(
-                items = listOf(64, 96, 128, 192).map { bitrate ->
-                    SettingRowData(
-                        "$bitrate kbps",
-                        if (bitrate == 128) "电脑端初始编码值，连接后会自动调整" else "电脑端连接时使用的初始 Opus 码率",
-                        Icons.Default.GraphicEq,
-                        bitrate == settings.initialBitrateKbps,
-                    ) {
-                        scope.launch { repository.setInitialBitrate(bitrate) }
+            SettingsSection(title = "初始发送码率", description = "电脑端发起连接时使用的初始 Opus 码率，播放中会根据网络自动调整") {
+                SettingsGroup(
+                    items = listOf(64, 96, 128, 192).map { bitrate ->
+                        SettingRowData(
+                            "$bitrate kbps",
+                            if (bitrate == 128) "推荐 · 覆盖大多数家庭网络" else null,
+                            Icons.Default.GraphicEq,
+                            bitrate == settings.initialBitrateKbps,
+                        ) {
+                            scope.launch { repository.setInitialBitrate(bitrate) }
+                        }
                     }
-                }
-            )
-            Spacer(Modifier.height(28.dp))
-            Text("音频帧时长", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(10.dp))
-            SettingsGroup(items = listOf(10, 20).map { frame ->
-                SettingRowData("$frame ms", "电脑端连接时使用的音频帧长", Icons.Default.GraphicEq, frame == settings.frameMs) {
-                    scope.launch { repository.setFrameMs(frame) }
-                }
-            })
-            Spacer(Modifier.height(28.dp))
-            Text("已授权电脑", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "以下电脑连接本机时无需再次确认",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(10.dp))
-            if (trustedPcs.isEmpty()) {
-                Text(
-                    "暂无已授权电脑。电脑主动连接时，可以选择“以后自动同意该设备”。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 8.dp),
                 )
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    trustedPcs.forEach { (id, name) ->
-                        Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant) {
-                            Row(
-                                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(Icons.Default.Computer, null, tint = MaterialTheme.colorScheme.primary)
-                                Spacer(Modifier.padding(horizontal = 10.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(name.ifBlank { id.take(12) }, style = MaterialTheme.typography.titleMedium)
-                                    Text(id.take(16), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            SettingsSection(title = "音频帧时长", description = "帧长越小延迟越低，但对网络抖动更敏感") {
+                SettingsGroup(items = listOf(10, 20).map { frame ->
+                    SettingRowData("$frame ms", if (frame == 10) "推荐 · 延迟更低" else "更稳定", Icons.Default.GraphicEq, frame == settings.frameMs) {
+                        scope.launch { repository.setFrameMs(frame) }
+                    }
+                })
+            }
+            SettingsSection(title = "已授权电脑", description = "以下电脑连接本机时无需再次确认") {
+                if (trustedPcs.isEmpty()) {
+                    Text(
+                        "暂无已授权电脑。电脑主动连接时，可以选择“以后自动同意该设备”。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 8.dp),
+                    )
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        trustedPcs.forEach { (id, name) ->
+                            Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant) {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(Icons.Default.Computer, null, tint = MaterialTheme.colorScheme.primary)
+                                    Spacer(Modifier.padding(horizontal = 10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(name.ifBlank { id.take(12) }, style = MaterialTheme.typography.titleMedium)
+                                        Text(id.take(16), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    OutlinedButton(onClick = { scope.launch { trustRepository.untrust(id) } }) { Text("移除") }
                                 }
-                                OutlinedButton(onClick = { scope.launch { trustRepository.untrust(id) } }) { Text("移除") }
                             }
                         }
                     }
                 }
             }
-            Spacer(Modifier.height(28.dp))
-            Text("接收格式", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(10.dp))
-            ProtocolInfoGroup()
+            SettingsSection(title = "接收格式", description = null) {
+                ProtocolInfoGroup()
+            }
+            SettingsSection(title = "关于", description = null) {
+                ProtocolInfoGroup()
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ProtocolInfoRow("多设备同步", "已启用 · 时钟对齐播放")
+                    ProtocolInfoRow("传输协议", "UDP 局域网 · Opus 编码")
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun SettingsSection(title: String, description: String?, content: @Composable () -> Unit) {
+    Column {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        if (description != null) {
+            Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp, bottom = 8.dp))
+        } else {
+            Spacer(Modifier.height(8.dp))
+        }
+        content()
     }
 }
 
@@ -462,7 +497,7 @@ private fun ProtocolInfoRow(title: String, value: String) {
 
 private data class SettingRowData(
     val title: String,
-    val subtitle: String,
+    val subtitle: String?,
     val icon: androidx.compose.ui.graphics.vector.ImageVector,
     val selected: Boolean,
     val onClick: () -> Unit,
@@ -496,7 +531,9 @@ private fun SettingOption(item: SettingRowData) {
         Spacer(Modifier.padding(horizontal = 12.dp))
         Column(Modifier.weight(1f)) {
             Text(item.title, style = MaterialTheme.typography.titleMedium)
-            Text(item.subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (item.subtitle != null) {
+                Text(item.subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         RadioButton(selected = item.selected, onClick = null)
     }
