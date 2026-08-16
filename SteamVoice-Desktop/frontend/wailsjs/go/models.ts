@@ -11,6 +11,8 @@ export namespace main {
 	    Bitrate: number;
 	    FrameMs: number;
 	    SupportedFrameMs: number[];
+	    UpdatedAtMs: number;
+	    SettingsDeviceID: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Device(source);
@@ -28,12 +30,16 @@ export namespace main {
 	        this.Bitrate = source["Bitrate"];
 	        this.FrameMs = source["FrameMs"];
 	        this.SupportedFrameMs = source["SupportedFrameMs"];
+	        this.UpdatedAtMs = source["UpdatedAtMs"];
+	        this.SettingsDeviceID = source["SettingsDeviceID"];
 	    }
 	}
 	export class Status {
 	    Connected: boolean;
 	    Device?: Device;
 	    Message: string;
+	    Bitrate: number;
+	    FrameMs: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Status(source);
@@ -44,6 +50,8 @@ export namespace main {
 	        this.Connected = source["Connected"];
 	        this.Device = this.convertValues(source["Device"], Device);
 	        this.Message = source["Message"];
+	        this.Bitrate = source["Bitrate"];
+	        this.FrameMs = source["FrameMs"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

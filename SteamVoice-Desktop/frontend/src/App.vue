@@ -4,28 +4,34 @@ import { Connect, DiscoverDevices, Disconnect, GetStatus } from '../wailsjs/go/m
 import { EventsOn, WindowSetDarkTheme, WindowSetLightTheme, WindowSetSystemDefaultTheme } from '../wailsjs/runtime/runtime';
 
 type Theme = 'light' | 'dark' | 'system';
-type Settings = { bitrate: number; frameMs: number; theme: Theme };
-type Device = { name: string; host: string; port: number; id: string; codec: string; sampleRate: number; channels: number; bitrate: number; frameMs: number; supportedFrameMs: number[] };
-const settingsKey = 'steamvoice.desktop.settings.v1';
-const defaults: Settings = { bitrate: 128000, frameMs: 10, theme: 'system' };
+type Settings = { bitrate: number; frameMs: number; theme: Theme; updatedAtMs: number; deviceId: string };
+type Device = { name: string; host: string; port: number; id: string; codec: string; sampleRate: number; channels: number; bitrate: number; frameMs: number; supportedFrameMs: number[]; updatedAtMs: number; settingsDeviceId: string };
+const settingsKey = 'steamvoice.desktop.settings.v2';
+const deviceIdKey = 'steamvoice.desktop.device_id';
+const deviceId = localStorage.getItem(deviceIdKey) ?? crypto.randomUUID();
+localStorage.setItem(deviceIdKey, deviceId);
+const defaults: Settings = { bitrate: 128000, frameMs: 10, theme: 'system', updatedAtMs: 0, deviceId };
 const settings = ref<Settings>({ ...defaults });
 const themeOptions: Theme[] = ['light', 'dark', 'system'];
 const page = ref<'devices' | 'settings'>('devices');
 const devices = ref<Device[]>([]);
 const status = ref('未连接接收端');
+const actualBitrate = ref(0);
 const active = ref<Device | null>(null);
 const supportedFrames = computed(() => active.value?.supportedFrameMs ?? (devices.value.length ? devices.value.flatMap((device) => device.supportedFrameMs) : [10, 20]));
 const frameAvailable = computed(() => !active.value || supportedFrames.value.includes(settings.value.frameMs));
 
 function normalizeSettings(raw: unknown): Settings {
   const value = raw as Partial<Settings> | null;
-  return { bitrate: [64000, 96000, 128000, 192000].includes(value?.bitrate ?? 0) ? value!.bitrate! : defaults.bitrate, frameMs: value?.frameMs === 20 ? 20 : 10, theme: value?.theme === 'light' || value?.theme === 'dark' || value?.theme === 'system' ? value.theme : defaults.theme };
+  return { bitrate: [64000, 96000, 128000, 192000].includes(value?.bitrate ?? 0) ? value!.bitrate! : defaults.bitrate, frameMs: value?.frameMs === 20 ? 20 : 10, theme: value?.theme === 'light' || value?.theme === 'dark' || value?.theme === 'system' ? value.theme : defaults.theme, updatedAtMs: Number(value?.updatedAtMs) || 0, deviceId: typeof value?.deviceId === 'string' && value.deviceId ? value.deviceId : deviceId };
 }
 function normalizeDevice(raw: any): Device {
   const values = raw?.supportedFrameMs ?? raw?.SupportedFrameMs ?? [raw?.frameMs ?? raw?.FrameMs ?? 10];
   const supportedFrameMs = (Array.isArray(values) ? values : [values]).filter((value) => value === 10 || value === 20);
-  return { name: raw?.name ?? raw?.Name ?? 'Android device', host: raw?.host ?? raw?.Host ?? '', port: raw?.port ?? raw?.Port ?? 0, id: raw?.id ?? raw?.ID ?? raw?.Id ?? raw?.name ?? raw?.Name ?? '', codec: raw?.codec ?? raw?.Codec ?? '', sampleRate: raw?.sampleRate ?? raw?.SampleRate ?? 48000, channels: raw?.channels ?? raw?.Channels ?? 2, bitrate: raw?.bitrate ?? raw?.Bitrate ?? 128000, frameMs: raw?.frameMs ?? raw?.FrameMs ?? 10, supportedFrameMs: supportedFrameMs.length ? supportedFrameMs : [10] };
+  return { name: raw?.name ?? raw?.Name ?? 'Android device', host: raw?.host ?? raw?.Host ?? '', port: raw?.port ?? raw?.Port ?? 0, id: raw?.id ?? raw?.ID ?? raw?.Id ?? raw?.name ?? raw?.Name ?? '', codec: raw?.codec ?? raw?.Codec ?? '', sampleRate: raw?.sampleRate ?? raw?.SampleRate ?? 48000, channels: raw?.channels ?? raw?.Channels ?? 2, bitrate: raw?.bitrate ?? raw?.Bitrate ?? 128000, frameMs: raw?.frameMs ?? raw?.FrameMs ?? 10, supportedFrameMs: supportedFrameMs.length ? supportedFrameMs : [10], updatedAtMs: Number(raw?.updatedAtMs ?? raw?.UpdatedAtMs) || 0, settingsDeviceId: raw?.settingsDeviceId ?? raw?.SettingsDeviceID ?? '' };
 }
+function newer(a: { updatedAtMs: number; deviceId: string }, b: { updatedAtMs: number; deviceId: string }) { return a.updatedAtMs > b.updatedAtMs || (a.updatedAtMs === b.updatedAtMs && a.deviceId > b.deviceId); }
+function touch(next: Partial<Settings>) { settings.value = { ...settings.value, ...next, updatedAtMs: Date.now(), deviceId }; }
 function statusMessage(raw: any, fallback: string): string {
   const value = raw?.message ?? raw?.Message;
   return typeof value === 'string' && value.trim() ? value : fallback;
@@ -38,7 +44,7 @@ async function discover() { devices.value = []; try { await DiscoverDevices(); }
 async function connect(device: Device) {
   if (!device.supportedFrameMs.includes(settings.value.frameMs)) { status.value = `该接收端不支持 ${settings.value.frameMs} ms 音频帧`; return; }
   try {
-    await Connect({ Name: device.name, Host: device.host, Port: device.port, ID: device.id, Codec: device.codec, SampleRate: device.sampleRate, Channels: device.channels, Bitrate: settings.value.bitrate, FrameMs: settings.value.frameMs, SupportedFrameMs: device.supportedFrameMs } as any);
+    await Connect({ Name: device.name, Host: device.host, Port: device.port, ID: device.id, Codec: device.codec, SampleRate: device.sampleRate, Channels: device.channels, Bitrate: settings.value.bitrate, FrameMs: settings.value.frameMs, SupportedFrameMs: device.supportedFrameMs, UpdatedAtMs: settings.value.updatedAtMs, SettingsDeviceID: settings.value.deviceId } as any);
     active.value = device; status.value = '已连接，正在发送电脑音频';
   } catch (error) { active.value = null; status.value = `连接失败：${error instanceof Error ? error.message : String(error)}`; }
 }
@@ -48,8 +54,8 @@ onMounted(async () => {
   try { settings.value = normalizeSettings(JSON.parse(localStorage.getItem(settingsKey) ?? 'null')); } catch { settings.value = { ...defaults }; }
   applyTheme(settings.value.theme);
   try { const value: any = await GetStatus(); status.value = statusMessage(value, status.value); } catch { status.value = '无法获取连接状态'; }
-  EventsOn('device:found', (raw: any) => { const device = normalizeDevice(raw); if (!devices.value.some((item) => item.id === device.id)) devices.value.push(device); });
-  EventsOn('stream:status', (raw: any) => { status.value = statusMessage(raw, '状态未知'); });
+  EventsOn('device:found', (raw: any) => { const device = normalizeDevice(raw); if (device.updatedAtMs && newer(device, settings.value)) { settings.value = { ...settings.value, bitrate: device.bitrate, frameMs: device.frameMs, updatedAtMs: device.updatedAtMs, deviceId: device.settingsDeviceId || settings.value.deviceId }; } const index = devices.value.findIndex((item) => item.id === device.id); if (index >= 0) devices.value[index] = device; else devices.value.push(device); });
+  EventsOn('stream:status', (raw: any) => { status.value = statusMessage(raw, '状态未知'); actualBitrate.value = Number(raw?.bitrate ?? raw?.Bitrate) || 0; });
   discover();
 });
 </script>
@@ -69,12 +75,12 @@ onMounted(async () => {
 
     <section v-else class="settings">
       <div class="section-head"><div><h2>设置</h2><p>音频参数会在下一次连接时生效</p></div></div>
-      <fieldset><legend>初始 Opus 码率</legend><label v-for="bitrate in [64000, 96000, 128000, 192000]" :key="bitrate" class="choice"><input v-model="settings.bitrate" type="radio" name="bitrate" :value="bitrate"><span>{{ bitrate / 1000 }} kbps</span></label></fieldset>
-      <fieldset><legend>音频帧时长</legend><label v-for="frame in [10, 20]" :key="frame" class="choice" :class="{ disabled: !supportedFrames.includes(frame) }"><input v-model="settings.frameMs" type="radio" name="frame" :value="frame" :disabled="!supportedFrames.includes(frame)"><span>{{ frame }} ms</span></label><p v-if="!frameAvailable" class="warning">当前连接的接收端不支持所选帧时长；请在下次连接前改为受支持的值。</p></fieldset>
+      <fieldset><legend>初始 Opus 码率</legend><label v-for="bitrate in [64000, 96000, 128000, 192000]" :key="bitrate" class="choice"><input v-model="settings.bitrate" @change="touch({ bitrate })" type="radio" name="bitrate" :value="bitrate"><span>{{ bitrate / 1000 }} kbps</span></label></fieldset>
+      <fieldset><legend>音频帧时长</legend><label v-for="frame in [10, 20]" :key="frame" class="choice" :class="{ disabled: !supportedFrames.includes(frame) }"><input v-model="settings.frameMs" @change="touch({ frameMs: frame })" type="radio" name="frame" :value="frame" :disabled="!supportedFrames.includes(frame)"><span>{{ frame }} ms</span></label><p v-if="!frameAvailable" class="warning">当前连接的接收端不支持所选帧时长；请在下次连接前改为受支持的值。</p></fieldset>
       <fieldset><legend>外观</legend><label v-for="theme in themeOptions" :key="theme" class="choice"><input v-model="settings.theme" type="radio" name="theme" :value="theme"><span>{{ theme === 'light' ? '浅色' : theme === 'dark' ? '深色' : '跟随系统' }}</span></label></fieldset>
       <fieldset class="readonly"><legend>接收格式</legend><p>编码器：Opus</p><p>采样率：48 kHz</p><p>声道：立体声</p></fieldset>
     </section>
-    <footer>{{ settings.bitrate / 1000 }} kbps · {{ settings.frameMs }} ms · 48 kHz 立体声 Opus · UDP 局域网传输</footer>
+    <footer>{{ settings.bitrate / 1000 }} kbps · {{ settings.frameMs }} ms · {{ actualBitrate ? `当前 ${actualBitrate / 1000} kbps · ` : '' }}48 kHz 立体声 Opus · UDP 局域网传输</footer>
   </main>
 </template>
 

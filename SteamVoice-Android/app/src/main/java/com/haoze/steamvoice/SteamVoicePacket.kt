@@ -24,6 +24,31 @@ data class ReceiverFeedback(val session: Long, val highestSeq: Long, val receive
     }
 }
 
+data class SettingsControl(val bitrateKbps: Int, val frameMs: Int, val updatedAtMs: Long, val deviceId: String) {
+    fun encode(): ByteArray {
+        val b = ByteBuffer.allocate(40).order(ByteOrder.BIG_ENDIAN)
+        b.put("SVCS".toByteArray()).put(3).put(1).putShort(0)
+        b.putInt(bitrateKbps * 1000).putShort(frameMs.toShort()).putShort(0).putLong(updatedAtMs)
+        val id = deviceId.toByteArray().copyOf(16)
+        b.put(id)
+        return b.array()
+    }
+    companion object {
+        fun decode(data: ByteArray, length: Int): SettingsControl? {
+            if (length != 40 || data.copyOfRange(0, 4).decodeToString() != "SVCS" || data[4].toInt() != 3 || data[5].toInt() != 1) return null
+            val b = ByteBuffer.wrap(data, 0, length).order(ByteOrder.BIG_ENDIAN)
+            b.position(8)
+            val bitrate = b.int / 1000
+            val frame = b.short.toInt() and 0xffff
+            b.short
+            val updated = b.long
+            val idBytes = ByteArray(16); b.get(idBytes)
+            val id = idBytes.decodeToString().trimEnd('\u0000')
+            return SettingsControl(bitrate, frame, updated, id)
+        }
+    }
+}
+
 object SteamVoiceProtocol {
     const val port = 40125
     const val version = 3

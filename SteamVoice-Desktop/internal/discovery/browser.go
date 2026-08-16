@@ -17,6 +17,8 @@ type Device struct {
 	Bitrate          int
 	FrameMs          int
 	SupportedFrameMs []int
+	UpdatedAtMs      int64
+	SettingsDeviceID string
 }
 
 // SupportsOpus reports whether the receiver advertised the v2 codec.
@@ -71,7 +73,12 @@ func (b *Browser) Start(parent context.Context) error {
 			if len(frameOptions) == 0 {
 				frameOptions = []int{10}
 			}
-			b.onDevice(Device{Name: name, Host: host, Port: e.Port, ID: e.Instance, Codec: values["codec"], SampleRate: number("sample_rate", 48000), Channels: number("channels", 2), Bitrate: number("bitrate", 128000), FrameMs: frameOptions[0], SupportedFrameMs: frameOptions})
+			currentFrame := number("current_frame_ms", frameOptions[0])
+			if currentFrame != 10 && currentFrame != 20 {
+				currentFrame = frameOptions[0]
+			}
+			updatedAt, _ := strconv.ParseInt(values["settings_updated_at"], 10, 64)
+			b.onDevice(Device{Name: name, Host: host, Port: e.Port, ID: e.Instance, Codec: values["codec"], SampleRate: number("sample_rate", 48000), Channels: number("channels", 2), Bitrate: number("bitrate", 128000), FrameMs: currentFrame, SupportedFrameMs: frameOptions, UpdatedAtMs: updatedAt, SettingsDeviceID: values["settings_device_id"]})
 		}
 	}()
 	return b.resolver.Browse(ctx, "_steamvoice._udp", "local.", entries)

@@ -125,6 +125,14 @@ private fun SettingsScreen(settings: AudioSettings, repository: SettingsReposito
                 }
             )
             Spacer(Modifier.height(28.dp))
+            Text("音频帧时长", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(10.dp))
+            SettingsGroup(items = listOf(10, 20).map { frame ->
+                SettingRowData("$frame ms", "电脑端连接时使用的音频帧长", Icons.Default.GraphicEq, frame == settings.frameMs) {
+                    scope.launch { repository.setFrameMs(frame); restart() }
+                }
+            })
+            Spacer(Modifier.height(28.dp))
             Text("接收格式", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(10.dp))
             ProtocolInfoGroup()
@@ -138,7 +146,7 @@ private fun ProtocolInfoGroup() {
         ProtocolInfoRow("编码器", "Opus")
         ProtocolInfoRow("采样率", "${SteamVoiceProtocol.sampleRate} Hz")
         ProtocolInfoRow("声道", "${SteamVoiceProtocol.channels} 声道立体声")
-        ProtocolInfoRow("音频帧", "${SteamVoiceProtocol.frameMilliseconds} ms")
+        ProtocolInfoRow("支持帧长", SteamVoiceProtocol.supportedFrameMilliseconds.sorted().joinToString(" / ") { "$it ms" })
     }
 }
 

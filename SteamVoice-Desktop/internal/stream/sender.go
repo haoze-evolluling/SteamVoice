@@ -54,6 +54,13 @@ func NewSender(address string, args ...int) (*Sender, error) {
 }
 
 func (s *Sender) SetBitrateCallback(fn func(int)) { s.mu.Lock(); s.onBitrate = fn; s.mu.Unlock() }
+
+func (s *Sender) SendSettings(settings protocol.Settings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.conn.Write(protocol.EncodeSettings(settings))
+	return err
+}
 func (s *Sender) feedbackLoop() {
 	defer s.feedbackWG.Done()
 	buf := make([]byte, 256)

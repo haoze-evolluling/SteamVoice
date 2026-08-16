@@ -31,9 +31,10 @@ class AudioReceiverService : Service() {
     override fun onDestroy() { stopRequested = true; socket?.close(); worker?.interrupt(); registration?.let { nsd?.unregisterService(it) }; stopForeground(STOP_FOREGROUND_REMOVE); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder? = null
     private fun notification() = NotificationCompat.Builder(this, "steamvoice-receiver").setSmallIcon(android.R.drawable.ic_lock_silent_mode_off).setContentTitle(getString(R.string.app_name)).setContentText(getString(R.string.receiver_notification)).setOngoing(true).build().also { val manager=getSystemService(NotificationManager::class.java); manager.createNotificationChannel(NotificationChannel("steamvoice-receiver",getString(R.string.receiver_channel),NotificationManager.IMPORTANCE_LOW)) }
-    private fun registerService() { val settings = runBlocking { SettingsRepository(this@AudioReceiverService).settings.first() }; nsd=getSystemService(Context.NSD_SERVICE) as NsdManager; val manufacturer=android.os.Build.MANUFACTURER.trim(); val model=android.os.Build.MODEL.trim(); val friendly=listOf(manufacturer,model).filter { it.isNotEmpty() }.distinct().joinToString(" ").ifEmpty { "Android device" }; val info=NsdServiceInfo().apply { serviceName="SteamVoice-$friendly"; serviceType="_steamvoice._udp."; port=SteamVoiceProtocol.port; setAttribute("codec", "opus"); setAttribute("sample_rate", SteamVoiceProtocol.sampleRate.toString()); setAttribute("channels", SteamVoiceProtocol.channels.toString()); setAttribute("bitrate", (settings.initialBitrateKbps * 1000).toString()); setAttribute("frame_ms", SteamVoiceProtocol.supportedFrameMilliseconds.joinToString(",")) }; registration=object:NsdManager.RegistrationListener { override fun onServiceRegistered(i:NsdServiceInfo){ Log.i(TAG,"advertising ${i.serviceName}") }; override fun onRegistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD registration failed: $e") }; override fun onServiceUnregistered(i:NsdServiceInfo){}; override fun onUnregistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD unregistration failed: $e") } }; nsd?.registerService(info,NsdManager.PROTOCOL_DNS_SD,registration) }
+    private fun registerService() { val settings = runBlocking { SettingsRepository(this@AudioReceiverService).settings.first() }; nsd=getSystemService(Context.NSD_SERVICE) as NsdManager; val manufacturer=android.os.Build.MANUFACTURER.trim(); val model=android.os.Build.MODEL.trim(); val friendly=listOf(manufacturer,model).filter { it.isNotEmpty() }.distinct().joinToString(" ").ifEmpty { "Android device" }; val info=NsdServiceInfo().apply { serviceName="SteamVoice-$friendly"; serviceType="_steamvoice._udp."; port=SteamVoiceProtocol.port; setAttribute("codec", "opus"); setAttribute("sample_rate", SteamVoiceProtocol.sampleRate.toString()); setAttribute("channels", SteamVoiceProtocol.channels.toString()); setAttribute("bitrate", (settings.initialBitrateKbps * 1000).toString()); setAttribute("frame_ms", SteamVoiceProtocol.supportedFrameMilliseconds.joinToString(",")); setAttribute("current_frame_ms", settings.frameMs.toString()); setAttribute("settings_updated_at", settings.updatedAtMs.toString()); setAttribute("settings_device_id", settings.deviceId) }; registration=object:NsdManager.RegistrationListener { override fun onServiceRegistered(i:NsdServiceInfo){ Log.i(TAG,"advertising ${i.serviceName}") }; override fun onRegistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD registration failed: $e") }; override fun onServiceUnregistered(i:NsdServiceInfo){}; override fun onUnregistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD unregistration failed: $e") } }; nsd?.registerService(info,NsdManager.PROTOCOL_DNS_SD,registration) }
     private fun receiveLoop() {
-        val settings = runBlocking { SettingsRepository(this@AudioReceiverService).settings.first() }
+        val repository = SettingsRepository(this@AudioReceiverService)
+        var settings = runBlocking { repository.settings.first() }
         val track = newTrack()
         val buffer = PacketJitterBuffer(targetPackets = 1)
         socket = DatagramSocket(SteamVoiceProtocol.port)
@@ -47,19 +48,27 @@ class AudioReceiverService : Service() {
         var activeSession = 0L
         var highest = 0L; var receivedCount = 0L; var lostCount = 0L; var lastFeedback = System.nanoTime()
         var fecPending = false
+        var actualBitrate = settings.initialBitrateKbps * 1000
         try {
             socket?.soTimeout = 50
             while (!stopRequested && !Thread.currentThread().isInterrupted) {
                 val datagram = DatagramPacket(bytes, bytes.size)
                 var gotPacket = true
                 try { socket?.receive(datagram) } catch (_: java.net.SocketTimeoutException) { gotPacket = false }
-                if (!gotPacket) { if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, buffer.queuedPackets(), settings.initialBitrateKbps * 1000); lastFeedback = System.nanoTime() }; continue }
+                if (!gotPacket) { if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, buffer.queuedPackets(), actualBitrate); lastFeedback = System.nanoTime() }; continue }
+                val control = SettingsControl.decode(datagram.data, datagram.length)
+                if (control != null) {
+                    val incoming = AudioSettings(control.bitrateKbps, control.frameMs, control.updatedAtMs, control.deviceId)
+                    if (runBlocking { repository.applyIfNewer(incoming) }) settings = incoming
+                    continue
+                }
                 received++
                 val packet = SteamVoiceProtocol.decode(datagram.data, datagram.length)
                 if (packet == null) { Log.w(TAG, "invalid UDP packet length=${datagram.length}"); continue }
                 lastAddress = datagram.address; lastPort = datagram.port
                 if (activeSession != 0L && activeSession != packet.session) { highest = 0; receivedCount = 0; lostCount = 0; fecPending = false }
                 activeSession = packet.session
+                actualBitrate = packet.bitrate
                 if (packet.sequence > highest) { lostCount += (packet.sequence - highest - if (receivedCount == 0L) 0 else 1).coerceAtLeast(0); highest = packet.sequence }
                 receivedCount++
                 decoded++
@@ -74,7 +83,7 @@ class AudioReceiverService : Service() {
                         PacketJitterBuffer.Item.Gap -> { lostCount++; fecPending = true }
                     }
                 }
-                if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, buffer.queuedPackets(), settings.initialBitrateKbps * 1000); lastFeedback = System.nanoTime() }
+                if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, buffer.queuedPackets(), actualBitrate); lastFeedback = System.nanoTime() }
             }
         } catch (e: Exception) {
             if (!stopRequested) Log.e(TAG, "receiver loop stopped", e)

@@ -11,6 +11,7 @@ import (
 	"steamvoice-desktop/internal/capture"
 	"steamvoice-desktop/internal/codec"
 	"steamvoice-desktop/internal/discovery"
+	"steamvoice-desktop/internal/protocol"
 	"steamvoice-desktop/internal/stream"
 )
 
@@ -24,11 +25,15 @@ type Device struct {
 	Bitrate          int
 	FrameMs          int
 	SupportedFrameMs []int
+	UpdatedAtMs      int64
+	SettingsDeviceID string
 }
 type Status struct {
 	Connected bool
 	Device    *Device
 	Message   string
+	Bitrate   int
+	FrameMs   int
 }
 
 type App struct {
@@ -50,7 +55,7 @@ func (a *App) DiscoverDevices() ([]Device, error) {
 		a.discoverer.Close()
 	}
 	b, err := discovery.NewBrowser(func(d discovery.Device) {
-		runtime.EventsEmit(a.ctx, "device:found", Device{Name: d.Name, Host: d.Host, Port: d.Port, ID: d.ID, Codec: d.Codec, SampleRate: d.SampleRate, Channels: d.Channels, Bitrate: d.Bitrate, FrameMs: d.FrameMs, SupportedFrameMs: d.SupportedFrameMs})
+		runtime.EventsEmit(a.ctx, "device:found", Device{Name: d.Name, Host: d.Host, Port: d.Port, ID: d.ID, Codec: d.Codec, SampleRate: d.SampleRate, Channels: d.Channels, Bitrate: d.Bitrate, FrameMs: d.FrameMs, SupportedFrameMs: d.SupportedFrameMs, UpdatedAtMs: d.UpdatedAtMs, SettingsDeviceID: d.SettingsDeviceID})
 	})
 	if err != nil {
 		return nil, err
@@ -111,7 +116,19 @@ func (a *App) Connect(device Device) error {
 		if err := encoder.SetBitrate(next); err != nil {
 			log.Printf("opus bitrate update failed: %v", err)
 		}
+		a.mu.Lock()
+		a.status.Bitrate = next
+		status := a.status
+		a.mu.Unlock()
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "stream:status", status)
+		}
 	})
+	if device.UpdatedAtMs > 0 || device.SettingsDeviceID != "" {
+		if err := s.SendSettings(protocol.Settings{BitrateKbps: uint32(bitrate), FrameMs: uint16(frameMs), UpdatedAtMs: device.UpdatedAtMs, DeviceID: device.SettingsDeviceID}); err != nil {
+			log.Printf("settings sync failed: %v", err)
+		}
+	}
 	a.mu.Lock()
 	a.sender = s
 	a.mu.Unlock()
@@ -139,7 +156,7 @@ func (a *App) Connect(device Device) error {
 	a.mu.Lock()
 	a.sender = s
 	a.capture = c
-	a.status = Status{Connected: true, Device: &device, Message: "正在传输系统音频"}
+	a.status = Status{Connected: true, Device: &device, Message: "正在传输系统音频", Bitrate: bitrate, FrameMs: frameMs}
 	a.mu.Unlock()
 	runtime.EventsEmit(a.ctx, "stream:status", a.status)
 	return nil
