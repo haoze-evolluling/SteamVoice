@@ -1,7 +1,5 @@
 # SteamVoice
 
-![SteamVoice 标志](SteamVoiceLogo.svg)
-
 SteamVoice 将 Windows 电脑正在播放的系统音频实时传输到同一局域网内的 Android 设备。电脑端通过 WASAPI loopback 捕获默认输出设备，使用 Opus 编码后经 UDP 发送；Android 端以媒体播放前台服务接收、解码并播放音频。
 
 当前版本：`1.1.0`
