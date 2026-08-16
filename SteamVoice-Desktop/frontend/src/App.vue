@@ -24,9 +24,11 @@ const connRequest = ref<ConnRequest | null>(null);
 const rememberChoice = ref(true);
 const identity = ref<{ deviceId: string; name: string }>({ deviceId: '', name: '' });
 const authorizedDevices = ref<AuthorizedDevice[]>([]);
+const connecting = ref<Record<string, boolean>>({});
 const connectedCount = computed(() => Object.keys(connected.value).length);
 const connectedDevices = computed(() => devices.value.filter((device) => connected.value[device.id]));
-const headerStatus = computed(() => (connectedCount.value > 0 ? `已连接 ${connectedCount.value} 台接收端，正在发送电脑音频` : status.value));
+const headerStatus = computed(() => (connectedCount.value > 0 ? `已连接 ${connectedCount.value} 台接收端${connectedCount.value > 1 ? ' · 同步播放中' : '，正在发送电脑音频'}` : status.value));
+const syncBadge = computed(() => connectedCount.value > 1);
 const supportedFrames = computed(() => {
   if (connectedDevices.value.length) return connectedDevices.value.reduce((acc: number[], device) => acc.filter((frame) => device.supportedFrameMs.includes(frame)), [10, 20]);
   return devices.value.length ? Array.from(new Set(devices.value.flatMap((device) => device.supportedFrameMs))) : [10, 20];
@@ -85,11 +87,15 @@ async function removeAuthorized(device: AuthorizedDevice) {
   try { await RemoveAuthorizedDevice(device.ID); await refreshAuthorized(); } catch { status.value = '移除授权失败'; }
 }
 async function connect(device: Device) {
-  if (connected.value[device.id]) return;
+  if (connected.value[device.id] || connecting.value[device.id]) return;
   if (!device.supportedFrameMs.includes(settings.value.frameMs)) { status.value = `该接收端不支持 ${settings.value.frameMs} ms 音频帧`; return; }
+  connecting.value[device.id] = true;
+  status.value = `正在等待 ${device.name} 确认连接请求…`;
   try {
     await Connect({ Name: device.name, Host: device.host, Port: device.port, ID: device.id, Codec: device.codec, SampleRate: device.sampleRate, Channels: device.channels, Bitrate: settings.value.bitrate, FrameMs: settings.value.frameMs, SupportedFrameMs: device.supportedFrameMs, UpdatedAtMs: settings.value.updatedAtMs, SettingsDeviceID: settings.value.deviceId } as any);
+    status.value = '';
   } catch (error) { status.value = `连接失败：${error instanceof Error ? error.message : String(error)}`; }
+  connecting.value[device.id] = false;
 }
 async function disconnect(device: Device) {
   try { await Disconnect(device.id); delete connected.value[device.id]; } catch { status.value = '断开连接失败'; }
@@ -128,8 +134,9 @@ onMounted(async () => {
 
     <section v-if="page === 'devices'">
       <div class="section-head"><div><h2>可用接收端</h2><p>同一局域网内已启动接收服务的设备，可同时连接多台外放</p></div><button @click="discover">重新扫描</button></div>
-      <div v-if="devices.length" class="devices"><article v-for="device in devices" :key="device.id"><div class="speaker">S</div><div><h3>{{ device.name }}</h3><p>{{ device.host }}:{{ device.port }} · 支持 {{ device.supportedFrameMs.join('/') }} ms<span v-if="deviceInfo(device)" :class="['live-info', { warn: deviceStalled(device) }]"> · {{ deviceInfo(device) }}</span></p></div><button v-if="connected[device.id]" class="secondary" @click="disconnect(device)">断开</button><button v-else @click="connect(device)">连接</button></article></div>
-      <div v-else class="empty">正在扫描局域网接收端...</div>
+      <div v-if="devices.length" class="devices"><article v-for="device in devices" :key="device.id" :class="{ live: connected[device.id] }"><div class="speaker">S</div><div><h3>{{ device.name }}</h3><p>{{ device.host }}:{{ device.port }} · 支持 {{ device.supportedFrameMs.join('/') }} ms<span v-if="deviceInfo(device)" :class="['live-info', { warn: deviceStalled(device) }]"> · {{ deviceInfo(device) }}</span></p></div><button v-if="connected[device.id]" class="secondary" @click="disconnect(device)">断开</button><button v-else-if="connecting[device.id]" class="secondary" disabled>等待确认…</button><button v-else @click="connect(device)">连接</button></article></div>
+      <div v-else class="empty"><span class="spinner"></span>正在扫描局域网接收端…<p class="empty-hint">请确认手机端 SteamVoice 已打开并连接到同一 Wi-Fi</p></div>
+      <p v-if="syncBadge" class="sync-note">♪ 多台接收端已按统一时间基准同步播放，自动校准时不会产生跳音</p>
     </section>
 
     <section v-else class="settings">
@@ -185,15 +192,25 @@ body { margin: 0; background: inherit; } main { max-width: 940px; margin: auto; 
   :root[data-theme='system'] .live-info { color: #4fc08d; }
 }
 @media (max-width: 600px) { main { padding: 26px 18px; } header { align-items: flex-start; flex-wrap: wrap; }.header-actions, .section-head, article { align-items: flex-start; flex-wrap: wrap; } }
+article.live { border-left: 3px solid #16805b; } article.live .speaker { background: #086d4d; color: #fff; }
+button[disabled] { opacity: 0.6; cursor: default; }
+.empty { display: flex; flex-direction: column; align-items: center; gap: 10px; border: 1px dashed #b8c0c6; padding: 36px 32px; color: #687077; }
+.empty-hint { font-size: 13px; } .empty-hint::before { content: ''; }
+.spinner { width: 18px; height: 18px; border: 2px solid #d9dde1; border-top-color: #086d4d; border-radius: 50%; animation: spin 0.9s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.sync-note { margin-top: 14px; font-size: 13px; color: #086d4d; background: #eaf5f0; border: 1px solid #c8e5d8; padding: 8px 12px; }
 .field-hint { font-size: 13px; margin-bottom: 8px; } .muted { color: #687077; font-size: 12px; }
 .authorized { display: flex; flex-direction: column; gap: 6px; } .authorized-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #d9dde1; background: #fff; } .authorized-row .muted { display: block; } .authorized-row div { min-width: 0; } .danger { color: #a24a18; }
 .modal-overlay { position: fixed; inset: 0; background: rgba(23, 32, 51, 0.45); display: grid; place-items: center; z-index: 40; }
 .modal { background: #fff; color: #172033; border-radius: 10px; padding: 24px; width: min(420px, calc(100vw - 48px)); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.25); }
 .modal h3 { margin: 0 0 8px; } .modal-device { font-size: 17px; font-weight: 700; margin: 0 0 4px; } .modal .muted { font-size: 13px; margin-bottom: 14px; } .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 :root[data-theme='dark'] .authorized-row { border-color: #3d4a51; background: #202b31; } :root[data-theme='dark'] .modal { background: #202b31; color: #e8edf0; } :root[data-theme='dark'] .modal .muted { color: #b6c1c7; }
+:root[data-theme='dark'] .sync-note { color: #4fc08d; background: #1c2f28; border-color: #2b4a3c; } :root[data-theme='dark'] .spinner { border-color: #3d4a51; border-top-color: #4fc08d; }
 @media (prefers-color-scheme: dark) {
   :root[data-theme='system'] .authorized-row { border-color: #3d4a51; background: #202b31; }
   :root[data-theme='system'] .modal { background: #202b31; color: #e8edf0; }
   :root[data-theme='system'] .modal .muted { color: #b6c1c7; }
+  :root[data-theme='system'] .sync-note { color: #4fc08d; background: #1c2f28; border-color: #2b4a3c; }
+  :root[data-theme='system'] .spinner { border-color: #3d4a51; border-top-color: #4fc08d; }
 }
 </style>
