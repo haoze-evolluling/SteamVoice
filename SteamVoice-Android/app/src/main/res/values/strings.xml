@@ -8,6 +8,12 @@
     <string name="cd_settings">设置</string>
     <string name="cd_back">返回</string>
     <string name="nearby_pcs">附近的电脑</string>
+    <string name="nearby_android_devices">附近的安卓设备</string>
+    <string name="android_sync_ready">可进行时间校正</string>
+    <string name="android_sync_running">正在校正时钟…</string>
+    <string name="android_sync_failed">校正失败，请检查网络</string>
+    <string name="android_sync_result">偏差 %1$d ms · 往返 %2$d ms</string>
+    <string name="android_sync_action">校正时间</string>
     <plurals name="device_count">
         <item quantity="other">%1$d 台</item>
     </plurals>

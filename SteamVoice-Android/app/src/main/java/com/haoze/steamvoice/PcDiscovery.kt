@@ -17,6 +17,15 @@ data class PcDevice(
     val seenAtMs: Long = System.currentTimeMillis(),
 )
 
+/** 局域网内可用于 SteamVoice 时钟校准的另一台 Android 设备。 */
+data class AndroidDevice(
+    val deviceId: String,
+    val name: String,
+    val host: String,
+    val port: Int,
+    val seenAtMs: Long = System.currentTimeMillis(),
+)
+
 /**
  * 浏览局域网中的 SteamVoice 电脑（role=pc），通过 StateFlow 发布设备列表。
  * NsdManager 同一时刻只允许一个 resolve，因此用队列串行解析。
@@ -30,6 +39,8 @@ class PcDiscovery(context: Context) {
     private val nsd = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val _devices = MutableStateFlow<List<PcDevice>>(emptyList())
     val devices: StateFlow<List<PcDevice>> = _devices
+    private val _androidDevices = MutableStateFlow<List<AndroidDevice>>(emptyList())
+    val androidDevices: StateFlow<List<AndroidDevice>> = _androidDevices
 
     private var listener: NsdManager.DiscoveryListener? = null
     private val resolveQueue = ArrayDeque<NsdServiceInfo>()
@@ -50,7 +61,10 @@ class PcDiscovery(context: Context) {
             override fun onDiscoveryStopped(serviceType: String) { listener = null }
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
                 val id = serviceInfo.attributes?.get("device_id")?.decodeToString()
-                if (id != null) upsert { list -> list.filterNot { it.deviceId == id } }
+            if (id != null) {
+                upsert { list -> list.filterNot { it.deviceId == id } }
+                _androidDevices.value = _androidDevices.value.filterNot { it.deviceId == id }
+            }
             }
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                 if (!serviceInfo.serviceType.contains("steamvoice")) return
@@ -102,10 +116,16 @@ class PcDiscovery(context: Context) {
 
     private fun onPcResolved(info: NsdServiceInfo) {
         val attrs = info.attributes ?: return
-        if (attrs["role"]?.decodeToString() != "pc") return
+        val role = attrs["role"]?.decodeToString() ?: return
         val deviceId = attrs["device_id"]?.decodeToString() ?: return
         val host = resolveHost(info) ?: return
         val name = info.serviceName.removePrefix("SteamVoice-").ifBlank { deviceId.take(8) }
+        if (role == "speaker") {
+            val device = AndroidDevice(deviceId, name, host, info.port)
+            _androidDevices.value = (_androidDevices.value.filterNot { it.deviceId == deviceId } + device).sortedBy { it.name.lowercase() }
+            return
+        }
+        if (role != "pc") return
         val device = PcDevice(deviceId = deviceId, name = name, host = host, port = info.port)
         upsert { list -> (list.filterNot { it.deviceId == deviceId } + device).sortedBy { it.name.lowercase() } }
     }

@@ -93,6 +93,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
@@ -101,6 +102,12 @@ import kotlin.math.sin
 
 /** 电脑在设备列表中的连接状态。 */
 enum class PcConnectionState { ONLINE, CONNECTING, CONNECTED }
+sealed interface AndroidSyncState {
+    data object Idle : AndroidSyncState
+    data object Syncing : AndroidSyncState
+    data class Complete(val result: AndroidClockSyncResult) : AndroidSyncState
+    data object Failed : AndroidSyncState
+}
 
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { startReceiver() }
@@ -198,16 +205,18 @@ private fun ReceiverScreen(
     onSettings: () -> Unit,
 ) {
     val devices by discovery.devices.collectAsState()
+    val androidDevices by discovery.androidDevices.collectAsState()
     val activePc by ConnectionBus.activePc.collectAsState()
     val authPrompt by ConnectionBus.authPrompt.collectAsState()
     val calibration by ConnectionBus.calibration.collectAsState()
     val pcStates = remember { mutableStateMapOf<String, PcConnectionState>() }
+    val androidSyncStates = remember { mutableStateMapOf<String, AndroidSyncState>() }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     // 校准完成后面板短暂停留展示“已同步”，再自然收起回到播放状态。
     var showCalibDone by remember { mutableStateOf(false) }
-    LaunchedEffect(calibration) {
+    LaunchedEffect(calibration?.phase) {
         when (calibration?.phase) {
             CalibrationPhase.DONE -> { showCalibDone = true; delay(1800); showCalibDone = false }
             else -> showCalibDone = false
@@ -259,7 +268,8 @@ private fun ReceiverScreen(
                     CalibrationPanel(state = calib, done = calib.phase == CalibrationPhase.DONE && showCalibDone)
                 }
             }
-            if (devices.isEmpty()) {
+            val visibleAndroidDevices = androidDevices.filter { it.deviceId != selfId }
+            if (devices.isEmpty() && visibleAndroidDevices.isEmpty()) {
                 EmptyDevices(Modifier.weight(1f))
             } else {
                 LazyColumn(
@@ -267,7 +277,7 @@ private fun ReceiverScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp),
                 ) {
-                    item {
+                    if (devices.isNotEmpty()) item {
                         Row(
                             Modifier.padding(start = 20.dp, top = 4.dp, bottom = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -277,6 +287,7 @@ private fun ReceiverScreen(
                                 pluralStringResource(R.plurals.device_count, devices.size, devices.size),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(end = 20.dp),
                             )
                         }
                     }
@@ -307,6 +318,28 @@ private fun ReceiverScreen(
                                 onDisconnect(pc)
                             },
                         )
+                    }
+                    if (visibleAndroidDevices.isNotEmpty()) {
+                        item {
+                            Text(
+                                stringResource(R.string.nearby_android_devices),
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.padding(start = 20.dp, top = 18.dp, bottom = 2.dp),
+                            )
+                        }
+                        items(visibleAndroidDevices, key = { it.deviceId }) { device ->
+                            AndroidDeviceCard(
+                                device = device,
+                                state = androidSyncStates[device.deviceId] ?: AndroidSyncState.Idle,
+                                onSync = {
+                                    androidSyncStates[device.deviceId] = AndroidSyncState.Syncing
+                                    scope.launch {
+                                        val result = withContext(Dispatchers.IO) { runCatching { AndroidClockSync.query(device) }.getOrNull() }
+                                        androidSyncStates[device.deviceId] = if (result == null) AndroidSyncState.Failed else AndroidSyncState.Complete(result)
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -527,6 +560,33 @@ private fun PcCard(pc: PcDevice, state: PcConnectionState, onConnect: () -> Unit
                 PcConnectionState.CONNECTING -> CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 2.dp)
                 PcConnectionState.ONLINE -> Button(onClick = onConnect) { Text(stringResource(R.string.btn_connect)) }
             }
+        }
+    }
+}
+
+@Composable
+private fun AndroidDeviceCard(device: AndroidDevice, state: AndroidSyncState, onSync: () -> Unit) {
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = if (state is AndroidSyncState.Complete) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surface, modifier = Modifier.size(42.dp)) {
+                Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.GraphicEq, null, tint = MaterialTheme.colorScheme.primary) }
+            }
+            Spacer(Modifier.padding(horizontal = 12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(device.name, style = MaterialTheme.typography.titleMedium)
+                Text(device.host, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                when (state) {
+                    AndroidSyncState.Idle -> Text(stringResource(R.string.android_sync_ready), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    AndroidSyncState.Syncing -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) { CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp); Text(stringResource(R.string.android_sync_running), style = MaterialTheme.typography.labelMedium) }
+                    AndroidSyncState.Failed -> Text(stringResource(R.string.android_sync_failed), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+                    is AndroidSyncState.Complete -> Text(stringResource(R.string.android_sync_result, state.result.offsetMs, state.result.rttMs), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+            if (state !is AndroidSyncState.Syncing) Button(onClick = onSync) { Text(stringResource(R.string.android_sync_action)) }
         }
     }
 }

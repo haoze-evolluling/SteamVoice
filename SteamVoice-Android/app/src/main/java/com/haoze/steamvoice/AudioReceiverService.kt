@@ -10,6 +10,8 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.util.Log
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -39,6 +41,7 @@ class AudioReceiverService : Service() {
     private var nsd: NsdManager? = null
     private var registration: NsdManager.RegistrationListener? = null
     private var activePc: ActivePc? = null
+    private var mediaSession: MediaSession? = null
 
     /** 仅在接收线程访问：等待用户决定的连接请求。 */
     private class PromptRecord(val prompt: PcAuthPrompt, val address: InetAddress, val port: Int)
@@ -57,9 +60,12 @@ class AudioReceiverService : Service() {
         Log.i(TAG, "receiver service starting port=${SteamVoiceProtocol.port}")
         stopRequested = false
         startForeground(8, notification(null))
+        ensureMediaSession()
         registerService()
         if (worker?.isAlive != true) worker = thread(name = "steamvoice-udp") { receiveLoop() }
-        return START_NOT_STICKY
+        // Keep the receiver discoverable after the process is reclaimed while the
+        // screen is locked; trusted peers can then reconnect without reopening UI.
+        return START_STICKY
     }
 
     override fun onDestroy() {
@@ -72,12 +78,15 @@ class AudioReceiverService : Service() {
             } catch (_: Exception) {}
         }
         ConnectionBus.activePc.value = null
+        updatePlaybackState(false)
         ConnectionBus.authPrompt.value = null
         ConnectionBus.calibration.value = null
         socket?.close()
         worker?.interrupt()
         registration?.let { nsd?.unregisterService(it) }
         dismissAuthNotification()
+        mediaSession?.release()
+        mediaSession = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
@@ -96,12 +105,30 @@ class AudioReceiverService : Service() {
                 if (pcName == null) loc.getString(R.string.receiver_notification)
                 else loc.getString(R.string.receiver_notification_active, pcName)
             )
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .setOnlyAlertOnce(true)
             .setOngoing(true)
             .build()
             .also {
                 val manager = getSystemService(NotificationManager::class.java)
-                manager.createNotificationChannel(NotificationChannel("steamvoice-receiver", loc.getString(R.string.receiver_channel), NotificationManager.IMPORTANCE_LOW))
+                val channel = NotificationChannel("steamvoice-receiver", loc.getString(R.string.receiver_channel), NotificationManager.IMPORTANCE_LOW)
+                channel.lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                manager.createNotificationChannel(channel)
             }
+    }
+
+    private fun ensureMediaSession() {
+        if (mediaSession != null) return
+        mediaSession = MediaSession(this, TAG).also { session ->
+            session.isActive = true
+            session.setPlaybackState(PlaybackState.Builder().setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE).setState(PlaybackState.STATE_PAUSED, 0L, 0f).build())
+        }
+    }
+
+    private fun updatePlaybackState(playing: Boolean) {
+        val state = if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED
+        mediaSession?.setPlaybackState(PlaybackState.Builder().setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE).setState(state, 0L, if (playing) 1f else 0f).build())
     }
 
     private fun registerService() {
@@ -196,6 +223,7 @@ class AudioReceiverService : Service() {
                     if (activePc?.deviceId == disconnectId) {
                         activePc = null
                         ConnectionBus.activePc.value = null
+                        updatePlaybackState(false)
                         updateForegroundNotification(null)
                     }
                 }
@@ -218,6 +246,7 @@ class AudioReceiverService : Service() {
                         val gone = activePc
                         activePc = null
                         ConnectionBus.activePc.value = null
+                        updatePlaybackState(false)
                         updateForegroundNotification(null)
                         // 通知电脑端立即 teardown，避免两端连接状态不一致。
                         gone?.let { pc ->
@@ -250,7 +279,11 @@ class AudioReceiverService : Service() {
                 if (conn != null) { handleConnControl(conn, datagram, trust); continue }
                 val timeSync = TimeSyncControl.decode(datagram.data, datagram.length)
                 if (timeSync != null) {
-                    if (timeSync.kind == TimeSyncControl.KIND_RESPONSE) {
+                    if (timeSync.kind == TimeSyncControl.KIND_REQUEST) {
+                        val t2 = System.nanoTime()
+                        val response = TimeSyncControl(TimeSyncControl.KIND_RESPONSE, timeSync.t1, t2, System.nanoTime()).encode()
+                        runCatching { socket?.send(DatagramPacket(response, response.size, datagram.address, datagram.port)) }
+                    } else {
                         clockSync.onExchange(timeSync.t1, timeSync.t2, timeSync.t3, System.nanoTime())
                     }
                     continue
@@ -269,6 +302,7 @@ class AudioReceiverService : Service() {
                 if (activePc!!.port == 0) activePc!!.address = datagram.address
                 lastAddress = datagram.address; lastPort = datagram.port
                 lastAudioNs = System.nanoTime()
+                updatePlaybackState(true)
                 if (activePc!!.port == 0) activePc!!.port = datagram.port
                 if (activeSession != 0L && activeSession != packet.session) { highest = 0; receivedCount = 0; lostCount = 0; fecPending = false; expectedNextTsNs = 0L }
                 activeSession = packet.session
@@ -335,6 +369,7 @@ class AudioReceiverService : Service() {
                     val gone = activePc
                     activePc = null
                     ConnectionBus.activePc.value = null
+                    updatePlaybackState(false)
                     updateForegroundNotification(null)
                     ConnectionBus.notify(R.string.msg_disconnected, gone?.name ?: LocaleManager.wrap(this).getString(R.string.generic_pc))
                 }
@@ -397,7 +432,9 @@ class AudioReceiverService : Service() {
     private fun postAuthNotification(prompt: PcAuthPrompt) {
         val manager = getSystemService(NotificationManager::class.java)
         val loc = LocaleManager.wrap(this)
-        manager.createNotificationChannel(NotificationChannel("steamvoice-auth", loc.getString(R.string.auth_channel), NotificationManager.IMPORTANCE_HIGH))
+        val authChannel = NotificationChannel("steamvoice-auth", loc.getString(R.string.auth_channel), NotificationManager.IMPORTANCE_HIGH)
+        authChannel.lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        manager.createNotificationChannel(authChannel)
         val openApp = PendingIntent.getActivity(
             this,
             prompt.requestId.hashCode(),
@@ -409,6 +446,7 @@ class AudioReceiverService : Service() {
             .setContentTitle(loc.getString(R.string.auth_title))
             .setContentText(loc.getString(R.string.auth_notification_text, prompt.name))
             .setContentIntent(openApp)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
             .addAction(0, loc.getString(R.string.auth_deny), respondIntent(prompt, false, false))
             .addAction(0, loc.getString(R.string.auth_allow), respondIntent(prompt, true, false))
