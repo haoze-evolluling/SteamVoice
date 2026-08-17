@@ -49,7 +49,6 @@ const calibration = ref<Record<string, Calibration>>({});
 const ntpServer = ref('ntp.aliyun.com');
 const ntpResult = ref<string>('');
 const syncFlash = ref(false);
-let syncFlashTimer: number | undefined;
 const connectedCount = computed(() => Object.keys(connected.value).length);
 const connectedDevices = computed(() => devices.value.filter((device) => connected.value[device.id]));
 const headerStatus = computed(() => (connectedCount.value > 0 ? t(connectedCount.value > 1 ? 'header.multi' : 'header.single', { n: connectedCount.value }) : status.value));
@@ -88,8 +87,6 @@ const allCalibrated = computed(() => connectedCount.value > 0 && connectedDevice
 watch(allCalibrated, (now, was) => {
   if (!now || was) return;
   syncFlash.value = true;
-  window.clearTimeout(syncFlashTimer);
-  syncFlashTimer = window.setTimeout(() => { syncFlash.value = false; }, 2600);
 });
 function showSyncPanel(): boolean { return calibratingCount.value > 0 || (syncFlash.value && connectedCount.value > 1); }
 function syncSummary(): string {
@@ -198,7 +195,7 @@ onMounted(async () => {
   EventsOn('conn:cancelled', (requestId: unknown) => { connRequests.value = connRequests.value.filter((item) => item.requestId !== String(requestId)); });
   discover();
 });
-onUnmounted(() => { window.clearInterval(tickTimer); window.clearTimeout(syncFlashTimer); });
+onUnmounted(() => { window.clearInterval(tickTimer); });
 </script>
 
 <template>
@@ -340,9 +337,8 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .wave.lg { height: 30px; gap: 4px; }
 .wave.lg i { width: 4px; background: #086d4d; }
 @keyframes wavebar { 0%, 100% { transform: scaleY(0.45); } 50% { transform: scaleY(1.9); } }
-.sync-panel.done .wave i, .sync-panel.done .link-line .pulse { animation-play-state: paused; opacity: 0.35; }
-.sync-panel.done .node-chip.phase-3 { animation: settle 0.7s cubic-bezier(0.34, 1.56, 0.64, 1); }
-@keyframes settle { 0% { transform: scale(0.6); } 100% { transform: scale(1); } }
+.sync-panel.done .wave i, .sync-panel.done .link-line .pulse { animation-play-state: running; opacity: 0.75; }
+.sync-panel.done .node-chip.phase-3 { animation: breathe 1.1s ease-in-out infinite; }
 .calib-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
 .calib-steps { display: flex; gap: 4px; list-style: none; margin: 0; padding: 0; }
 .calib-steps li { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #e8ecee; color: #687077; transition: background 0.4s, color 0.4s; }

@@ -59,8 +59,11 @@ class AudioReceiverService : Service() {
         }
         Log.i(TAG, "receiver service starting port=${SteamVoiceProtocol.port}")
         stopRequested = false
-        startForeground(8, notification(null))
         ensureMediaSession()
+        // Publish the media session-backed notification before doing network
+        // work so Android treats this as an active lock-screen playback
+        // service from the moment it is started.
+        startForeground(8, notification(null))
         registerService()
         if (worker?.isAlive != true) worker = thread(name = "steamvoice-udp") { receiveLoop() }
         // Keep the receiver discoverable after the process is reclaimed while the
@@ -99,7 +102,7 @@ class AudioReceiverService : Service() {
     private fun notification(pcName: String?): Notification {
         val loc = LocaleManager.wrap(this)
         return NotificationCompat.Builder(this, "steamvoice-receiver")
-            .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(loc.getString(R.string.app_name))
             .setContentText(
                 if (pcName == null) loc.getString(R.string.receiver_notification)
@@ -295,15 +298,23 @@ class AudioReceiverService : Service() {
                 // control handshake already authorized this peer; bind the
                 // actual source address on its first audio packet.
                 val authorized = activePc != null &&
-                    (datagram.address == activePc!!.address || activePc!!.port == 0)
+                    (lastAddress == null || datagram.address == activePc!!.address || activePc!!.port == 0)
                 if (!authorized) { unauthorizedDrops++; if (unauthorizedDrops % 100 == 1L) Log.w(TAG, "dropping audio from unauthorized ${datagram.address} (total=$unauthorizedDrops)"); continue }
                 val packet = SteamVoiceProtocol.decode(datagram.data, datagram.length)
                 if (packet == null) { Log.w(TAG, "invalid UDP packet length=${datagram.length}"); continue }
-                if (activePc!!.port == 0) activePc!!.address = datagram.address
+                // The control request originates from the receiver's fixed
+                // port (40125), while the desktop streams from the sender's
+                // own ephemeral UDP socket. Bind feedback/time-sync to that
+                // actual source on the first authenticated audio packet.
+                // Keeping the control port here drops all feedback on the
+                // floor and makes the desktop mark the session as interrupted.
+                if (lastAddress == null || activeSession != packet.session) {
+                    activePc!!.address = datagram.address
+                    activePc!!.port = datagram.port
+                }
                 lastAddress = datagram.address; lastPort = datagram.port
                 lastAudioNs = System.nanoTime()
                 updatePlaybackState(true)
-                if (activePc!!.port == 0) activePc!!.port = datagram.port
                 if (activeSession != 0L && activeSession != packet.session) { highest = 0; receivedCount = 0; lostCount = 0; fecPending = false; expectedNextTsNs = 0L }
                 activeSession = packet.session
                 actualBitrate = packet.bitrate

@@ -90,7 +90,6 @@ import androidx.lifecycle.lifecycleScope
 import androidx.core.content.ContextCompat
 import com.haoze.steamvoice.ui.theme.SteamVoiceTheme
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -214,14 +213,6 @@ private fun ReceiverScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    // 校准完成后面板短暂停留展示“已同步”，再自然收起回到播放状态。
-    var showCalibDone by remember { mutableStateOf(false) }
-    LaunchedEffect(calibration?.phase) {
-        when (calibration?.phase) {
-            CalibrationPhase.DONE -> { showCalibDone = true; delay(1800); showCalibDone = false }
-            else -> showCalibDone = false
-        }
-    }
     LaunchedEffect(Unit) {
         ConnectionBus.messages.collect { msg ->
             scope.launch { snackbar.showSnackbar(context.getString(msg.resId, *msg.args)) }
@@ -260,12 +251,12 @@ private fun ReceiverScreen(
         Column(Modifier.fillMaxSize().padding(padding)) {
             val calib = calibration
             AnimatedVisibility(
-                visible = calib != null && (calib.phase != CalibrationPhase.DONE || showCalibDone),
+                visible = calib != null,
                 enter = expandVertically() + fadeIn(),
                 exit = shrinkVertically() + fadeOut(),
             ) {
                 if (calib != null) {
-                    CalibrationPanel(state = calib, done = calib.phase == CalibrationPhase.DONE && showCalibDone)
+                    CalibrationPanel(state = calib, done = calib.phase == CalibrationPhase.DONE)
                 }
             }
             val visibleAndroidDevices = androidDevices.filter { it.deviceId != selfId }
@@ -375,7 +366,7 @@ private fun CalibrationPhase.label(): String = when (this) {
 /**
  * 多设备同步校准面板：波形动画 + 检测→计算→同步→完成阶段指示。
  * 阶段由接收服务的真实校准状态驱动（时钟对时、播放启动），
- * 完成后短暂展示“已同步”并自然收起，回到正常播放界面。
+ * 完成后持续展示“已同步”，动画继续运行以保持状态卡片的活跃反馈。
  */
 @Composable
 private fun CalibrationPanel(state: CalibrationState, done: Boolean) {
@@ -386,7 +377,7 @@ private fun CalibrationPanel(state: CalibrationState, done: Boolean) {
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                CalibrationWave(Modifier.size(width = 64.dp, height = 28.dp), idle = done)
+                CalibrationWave(Modifier.size(width = 64.dp, height = 28.dp))
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -411,9 +402,9 @@ private fun CalibrationPanel(state: CalibrationState, done: Boolean) {
     }
 }
 
-/** 随校准进度起伏的声波条；完成后静止为低幅波形。 */
+/** 持续起伏的声波条，为校准卡片提供活跃状态反馈。 */
 @Composable
-private fun CalibrationWave(modifier: Modifier = Modifier, idle: Boolean) {
+private fun CalibrationWave(modifier: Modifier = Modifier) {
     val transition = rememberInfiniteTransition(label = "calib-wave")
     val phase by transition.animateFloat(
         initialValue = 0f,
@@ -428,7 +419,7 @@ private fun CalibrationWave(modifier: Modifier = Modifier, idle: Boolean) {
         val barWidth = (size.width - gap * (bars - 1)) / bars
         val mid = size.height / 2f
         for (i in 0 until bars) {
-            val level = if (idle) 0.3f else abs(sin(phase + i * 0.55f)) * 0.85f + 0.15f
+            val level = abs(sin(phase + i * 0.55f)) * 0.85f + 0.15f
             val h = size.height * level * 0.9f
             drawRoundRect(
                 color = barColor,
@@ -468,7 +459,7 @@ private fun CalibrationSteps(current: CalibrationPhase) {
                 )
                 Spacer(Modifier.width(6.dp))
             }
-            val active = index == activeIndex && current != CalibrationPhase.DONE
+            val active = index == activeIndex
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Surface(
                     shape = CircleShape,
