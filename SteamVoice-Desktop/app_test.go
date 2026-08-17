@@ -15,7 +15,7 @@ func newTestSession(t *testing.T, id string, name string) *deviceSession {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sender.Close() })
-	return &deviceSession{device: Device{ID: id, Name: name}, sender: sender, status: DeviceStatus{DeviceID: id, Name: name, Connected: true, Message: "正在传输系统音频", Bitrate: 128000, FrameMs: 10}}
+	return &deviceSession{device: Device{ID: id, Name: name}, sender: sender, status: DeviceStatus{DeviceID: id, Name: name, Connected: true, Message: svMsg("streaming"), Bitrate: 128000, FrameMs: 10}}
 }
 
 func TestNewAppHasNoConnectedDevices(t *testing.T) {
@@ -23,8 +23,8 @@ func TestNewAppHasNoConnectedDevices(t *testing.T) {
 	if status.ConnectedCount != 0 {
 		t.Fatalf("new app must have no connected devices, got %d", status.ConnectedCount)
 	}
-	if status.Message != "未连接接收端" {
-		t.Fatalf("initial status message = %q, want %q", status.Message, "未连接接收端")
+	if status.Message != svMsg("idle") {
+		t.Fatalf("initial status message = %q, want %q", status.Message, svMsg("idle"))
 	}
 	if len(status.Devices) != 0 {
 		t.Fatalf("new app device list = %v, want empty", status.Devices)
@@ -54,10 +54,10 @@ func TestConnectRejectsInvalidParameters(t *testing.T) {
 		device Device
 		want   string
 	}{
-		{"bitrate", Device{Host: "127.0.0.1", Port: 1, ID: "x", Codec: "opus", Bitrate: 123000, FrameMs: 10}, "unsupported bitrate"},
-		{"frame", Device{Host: "127.0.0.1", Port: 1, ID: "x", Codec: "opus", Bitrate: 128000, FrameMs: 30}, "unsupported frame duration"},
-		{"codec", Device{Host: "127.0.0.1", Port: 1, ID: "x", Codec: "pcm", Bitrate: 128000, FrameMs: 10}, "Opus"},
-		{"unsupported by receiver", Device{Host: "127.0.0.1", Port: 1, ID: "x", Codec: "opus", Bitrate: 128000, FrameMs: 20, SupportedFrameMs: []int{10}}, "does not support"},
+		{"bitrate", Device{Host: "127.0.0.1", Port: 1, ID: "x", Codec: "opus", Bitrate: 123000, FrameMs: 10}, "err_bitrate"},
+		{"frame", Device{Host: "127.0.0.1", Port: 1, ID: "x", Codec: "opus", Bitrate: 128000, FrameMs: 30}, "err_frame"},
+		{"codec", Device{Host: "127.0.0.1", Port: 1, ID: "x", Codec: "pcm", Bitrate: 128000, FrameMs: 10}, "err_codec"},
+		{"unsupported by receiver", Device{Host: "127.0.0.1", Port: 1, ID: "x", Codec: "opus", Bitrate: 128000, FrameMs: 20, SupportedFrameMs: []int{10}}, "err_frame_receiver"},
 	}
 	for _, c := range cases {
 		err := a.Connect(c.device)
@@ -74,8 +74,8 @@ func TestConnectRejectsFrameChangeWhileStreaming(t *testing.T) {
 	a := NewApp()
 	a.frameMs = 10
 	err := a.Connect(Device{Host: "127.0.0.1", Port: 1, ID: "x", Codec: "opus", Bitrate: 128000, FrameMs: 20, SupportedFrameMs: []int{10, 20}})
-	if err == nil || !strings.Contains(err.Error(), "10 ms") {
-		t.Fatalf("err = %v, want frame duration conflict mentioning 10 ms", err)
+	if err == nil || err.Error() != svMsgf("err_frame_in_use", "10") {
+		t.Fatalf("err = %v, want frame duration conflict svmsg:err_frame_in_use:10", err)
 	}
 }
 
@@ -107,11 +107,11 @@ func TestCheckStaleSessionsFlagsSilentReceiver(t *testing.T) {
 	a.sessions["phone-a"] = session
 	time.Sleep(20 * time.Millisecond)
 	updated := a.checkStaleSessions()
-	if len(updated) != 1 || updated[0].Message != "接收端无响应" {
-		t.Fatalf("updated = %+v, want one 无响应 status", updated)
+	if len(updated) != 1 || updated[0].Message != svMsg("receiver_unresponsive") {
+		t.Fatalf("updated = %+v, want one receiver_unresponsive status", updated)
 	}
-	if session.status.Message != "接收端无响应" {
-		t.Fatalf("session message = %q, want 接收端无响应", session.status.Message)
+	if session.status.Message != svMsg("receiver_unresponsive") {
+		t.Fatalf("session message = %q, want %q", session.status.Message, svMsg("receiver_unresponsive"))
 	}
 	if again := a.checkStaleSessions(); len(again) != 0 {
 		t.Fatalf("stable session re-reported: %+v", again)
@@ -129,7 +129,7 @@ func TestCheckStaleSessionsDropsLongSilentReceiver(t *testing.T) {
 	if a.GetStatus().ConnectedCount != 0 {
 		t.Fatal("long-silent receiver must be dropped")
 	}
-	if len(updated) != 1 || !strings.Contains(updated[0].Message, "已断开") {
+	if len(updated) != 1 || updated[0].Message != svMsg("receiver_dropped") {
 		t.Fatalf("updated = %+v, want drop status", updated)
 	}
 }

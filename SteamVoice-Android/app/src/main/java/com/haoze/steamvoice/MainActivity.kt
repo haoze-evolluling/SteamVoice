@@ -1,6 +1,7 @@
 package com.haoze.steamvoice
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -47,6 +48,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -78,6 +80,9 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -103,8 +108,14 @@ class MainActivity : ComponentActivity() {
     private val connector = PcConnector()
     private val repository by lazy { SettingsRepository(applicationContext) }
     private var selfId by mutableStateOf("")
-    private val selfName: String by lazy { DeviceIdentity.friendlyName() }
+    private val selfName: String by lazy { DeviceIdentity.friendlyName(LocaleManager.wrap(applicationContext)) }
     private var receiverRunning by mutableStateOf(false)
+    private var appliedLanguage = AppLanguage.SYSTEM
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(LocaleManager.wrap(newBase))
+        appliedLanguage = LocaleManager.current(newBase)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -127,7 +138,15 @@ class MainActivity : ComponentActivity() {
         ensureReceiverRunning()
     }
 
-    override fun onStart() { super.onStart(); discovery.start() }
+    override fun onStart() {
+        super.onStart()
+        // 设置页切换语言后返回时主屏尚未重建，这里检测到变化即重建让文案立即生效。
+        if (LocaleManager.current(this) != appliedLanguage) {
+            recreate()
+            return
+        }
+        discovery.start()
+    }
     override fun onStop() { super.onStop(); discovery.stop() }
 
     private fun ensureReceiverRunning() {
@@ -185,6 +204,7 @@ private fun ReceiverScreen(
     val pcStates = remember { mutableStateMapOf<String, PcConnectionState>() }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     // 校准完成后面板短暂停留展示“已同步”，再自然收起回到播放状态。
     var showCalibDone by remember { mutableStateOf(false) }
     LaunchedEffect(calibration) {
@@ -194,7 +214,9 @@ private fun ReceiverScreen(
         }
     }
     LaunchedEffect(Unit) {
-        ConnectionBus.messages.collect { scope.launch { snackbar.showSnackbar(it) } }
+        ConnectionBus.messages.collect { msg ->
+            scope.launch { snackbar.showSnackbar(context.getString(msg.resId, *msg.args)) }
+        }
     }
     LaunchedEffect(devices) {
         // 掉线的电脑从列表移除后，同步清理其连接状态。
@@ -213,15 +235,15 @@ private fun ReceiverScreen(
                     Text("SteamVoice", style = MaterialTheme.typography.headlineSmall)
                     Text(
                         when {
-                            activePc != null -> "正在接收 ${activePc?.name} 的音频"
-                            receiverRunning -> "接收服务运行中 · 等待电脑连接"
-                            else -> "正在启动接收服务…"
+                            activePc != null -> stringResource(R.string.receiver_active, activePc?.name ?: "")
+                            receiverRunning -> stringResource(R.string.receiver_idle)
+                            else -> stringResource(R.string.receiver_starting)
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "设置") }
+                IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, stringResource(R.string.cd_settings)) }
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -250,9 +272,9 @@ private fun ReceiverScreen(
                             Modifier.padding(start = 20.dp, top = 4.dp, bottom = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text("附近的电脑", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                            Text(stringResource(R.string.nearby_pcs), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                             Text(
-                                "${devices.size} 台",
+                                pluralStringResource(R.plurals.device_count, devices.size, devices.size),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -271,11 +293,11 @@ private fun ReceiverScreen(
                                         is PcConnector.ConnectResult.Accepted -> pcStates.remove(pc.deviceId)
                                         is PcConnector.ConnectResult.Denied -> {
                                             pcStates.remove(pc.deviceId)
-                                            scope.launch { snackbar.showSnackbar("电脑端拒绝了连接请求") }
+                                            scope.launch { snackbar.showSnackbar(context.getString(R.string.pc_denied)) }
                                         }
                                         is PcConnector.ConnectResult.Timeout -> {
                                             pcStates.remove(pc.deviceId)
-                                            scope.launch { snackbar.showSnackbar("无法连接 ${pc.name}，请确认电脑端正在运行") }
+                                            scope.launch { snackbar.showSnackbar(context.getString(R.string.pc_connect_failed, pc.name)) }
                                         }
                                     }
                                 }
@@ -301,13 +323,20 @@ private fun ReceiverScreen(
     }
 }
 
-private val CALIBRATION_STEPS = listOf("检测", "计算", "同步", "完成")
+@Composable
+private fun calibrationStepLabels(): List<String> = listOf(
+    stringResource(R.string.calib_step_detect),
+    stringResource(R.string.calib_step_calculate),
+    stringResource(R.string.calib_step_sync),
+    stringResource(R.string.calib_step_done),
+)
 
+@Composable
 private fun CalibrationPhase.label(): String = when (this) {
-    CalibrationPhase.DETECT -> "正在检测电脑的音频信号"
-    CalibrationPhase.CALCULATE -> "测量时钟偏差，与电脑时间基准对时"
-    CalibrationPhase.SYNC -> "已对齐时钟，等待统一播放时刻"
-    CalibrationPhase.DONE -> "已同步 · 回到正常播放"
+    CalibrationPhase.DETECT -> stringResource(R.string.calib_phase_detect)
+    CalibrationPhase.CALCULATE -> stringResource(R.string.calib_phase_calculate)
+    CalibrationPhase.SYNC -> stringResource(R.string.calib_phase_sync)
+    CalibrationPhase.DONE -> stringResource(R.string.calib_phase_done)
 }
 
 /**
@@ -328,14 +357,14 @@ private fun CalibrationPanel(state: CalibrationState, done: Boolean) {
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        if (done) "已同步" else "同步校准中",
+                        if (done) stringResource(R.string.calib_synced) else stringResource(R.string.calibrating),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                     val stats = if (done || state.phase == CalibrationPhase.SYNC) {
                         val offset = state.offsetMs
                         val rtt = state.rttMs
-                        if (offset != null && rtt != null) "时钟偏差 ${abs(offset)} ms · 往返 $rtt ms" else null
+                        if (offset != null && rtt != null) stringResource(R.string.calib_stats, abs(offset), rtt) else null
                     } else null
                     Text(
                         stats ?: state.phase.label(),
@@ -395,7 +424,7 @@ private fun CalibrationSteps(current: CalibrationPhase) {
         label = "step-pulse-scale",
     )
     Row(verticalAlignment = Alignment.CenterVertically) {
-        CALIBRATION_STEPS.forEachIndexed { index, label ->
+        calibrationStepLabels().forEachIndexed { index, label ->
             if (index > 0) {
                 Spacer(Modifier.width(6.dp))
                 Box(
@@ -429,20 +458,20 @@ private fun PcAuthDialog(prompt: PcAuthPrompt, onRespond: (allow: Boolean, remem
     var remember by remember { mutableStateOf(true) }
     AlertDialog(
         onDismissRequest = { onRespond(false, false) },
-        title = { Text("连接请求") },
+        title = { Text(stringResource(R.string.auth_title)) },
         text = {
             Column {
-                Text("${prompt.name} 想要把电脑音频推送到本机播放。", style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(R.string.auth_message, prompt.name), style = MaterialTheme.typography.bodyMedium)
                 Text(prompt.host, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(14.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = remember, onCheckedChange = { remember = it })
-                    Text("以后自动同意该设备", style = MaterialTheme.typography.bodyMedium)
+                    Text(stringResource(R.string.auth_remember), style = MaterialTheme.typography.bodyMedium)
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { onRespond(true, remember) }) { Text("允许") } },
-        dismissButton = { TextButton(onClick = { onRespond(false, false) }) { Text("拒绝") } },
+        confirmButton = { TextButton(onClick = { onRespond(true, remember) }) { Text(stringResource(R.string.auth_allow)) } },
+        dismissButton = { TextButton(onClick = { onRespond(false, false) }) { Text(stringResource(R.string.auth_deny)) } },
     )
 }
 
@@ -453,9 +482,9 @@ private fun EmptyDevices(modifier: Modifier = Modifier) {
             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.size(72.dp)) {
                 Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Computer, null, modifier = Modifier.size(34.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
-            Text("正在搜索附近的电脑", style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+            Text(stringResource(R.string.searching_title), style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
             Text(
-                "请确认电脑端 SteamVoice 正在运行，且手机和电脑连接到同一 Wi-Fi 网络。",
+                stringResource(R.string.searching_hint),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -494,9 +523,9 @@ private fun PcCard(pc: PcDevice, state: PcConnectionState, onConnect: () -> Unit
                 }
             }
             when (state) {
-                PcConnectionState.CONNECTED -> OutlinedButton(onClick = onDisconnect) { Text("断开") }
+                PcConnectionState.CONNECTED -> OutlinedButton(onClick = onDisconnect) { Text(stringResource(R.string.btn_disconnect)) }
                 PcConnectionState.CONNECTING -> CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 2.dp)
-                PcConnectionState.ONLINE -> Button(onClick = onConnect) { Text("连接") }
+                PcConnectionState.ONLINE -> Button(onClick = onConnect) { Text(stringResource(R.string.btn_connect)) }
             }
         }
     }
@@ -512,21 +541,27 @@ private fun StateDot(state: PcConnectionState) {
     Surface(color = color, shape = CircleShape, modifier = Modifier.size(8.dp)) {}
 }
 
+@Composable
 private fun PcConnectionState.label(): String = when (this) {
-    PcConnectionState.ONLINE -> "在线"
-    PcConnectionState.CONNECTING -> "连接中…"
-    PcConnectionState.CONNECTED -> "已连接"
+    PcConnectionState.ONLINE -> stringResource(R.string.pc_state_online)
+    PcConnectionState.CONNECTING -> stringResource(R.string.pc_state_connecting)
+    PcConnectionState.CONNECTED -> stringResource(R.string.pc_state_connected)
 }
 
 object DeviceIdentity {
-    fun friendlyName(): String {
+    fun friendlyName(context: Context): String {
         val manufacturer = android.os.Build.MANUFACTURER.trim()
         val model = android.os.Build.MODEL.trim()
-        return listOf(manufacturer, model).filter { it.isNotEmpty() }.distinct().joinToString(" ").ifEmpty { "Android 设备" }
+        return listOf(manufacturer, model).filter { it.isNotEmpty() }.distinct().joinToString(" ")
+            .ifEmpty { context.getString(R.string.android_device) }
     }
 }
 
 class SettingsActivity : ComponentActivity() {
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(LocaleManager.wrap(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -537,23 +572,31 @@ class SettingsActivity : ComponentActivity() {
                 val settings by repository.settings.collectAsState(initial = AudioSettings())
                 // 音频参数只影响下一次连接协商，不需要重启接收服务
                 // （重启会断开正在进行的连接）。
-                SettingsScreen(settings, repository, trustRepository) { finish() }
+                SettingsScreen(settings, repository, trustRepository, onLanguageChanged = { recreate() }) { finish() }
             }
         }
     }
 }
 
 @Composable
-private fun SettingsScreen(settings: AudioSettings, repository: SettingsRepository, trustRepository: PcTrustRepository, onBack: () -> Unit) {
+private fun SettingsScreen(
+    settings: AudioSettings,
+    repository: SettingsRepository,
+    trustRepository: PcTrustRepository,
+    onLanguageChanged: () -> Unit,
+    onBack: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val trustedPcs by trustRepository.trusted.collectAsState(initial = emptyMap())
+    var language by remember { mutableStateOf(LocaleManager.current(context)) }
     Scaffold(topBar = {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(end = 16.dp),
         ) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
-            Text("设置", style = MaterialTheme.typography.titleLarge)
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.cd_back)) }
+            Text(stringResource(R.string.settings_title), style = MaterialTheme.typography.titleLarge)
         }
     }) { padding ->
         Column(
@@ -565,12 +608,32 @@ private fun SettingsScreen(settings: AudioSettings, repository: SettingsReposito
                 .padding(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
-            SettingsSection(title = "初始发送码率", description = "电脑端发起连接时使用的初始 Opus 码率，播放中会根据网络自动调整") {
+            SettingsSection(title = stringResource(R.string.settings_language_title), description = stringResource(R.string.settings_language_desc)) {
+                SettingsGroup(
+                    items = listOf(
+                        AppLanguage.SYSTEM to R.string.lang_system,
+                        AppLanguage.ZH to R.string.lang_zh,
+                        AppLanguage.EN to R.string.lang_en,
+                    ).map { (lang, labelRes) ->
+                        SettingRowData(
+                            stringResource(labelRes),
+                            null,
+                            Icons.Default.Language,
+                            language == lang,
+                        ) {
+                            LocaleManager.set(context, lang)
+                            language = lang
+                            onLanguageChanged()
+                        }
+                    }
+                )
+            }
+            SettingsSection(title = stringResource(R.string.settings_bitrate_title), description = stringResource(R.string.settings_bitrate_desc)) {
                 SettingsGroup(
                     items = listOf(64, 96, 128, 192).map { bitrate ->
                         SettingRowData(
                             "$bitrate kbps",
-                            if (bitrate == 128) "推荐 · 覆盖大多数家庭网络" else null,
+                            if (bitrate == 128) stringResource(R.string.bitrate_recommended) else null,
                             Icons.Default.GraphicEq,
                             bitrate == settings.initialBitrateKbps,
                         ) {
@@ -579,17 +642,22 @@ private fun SettingsScreen(settings: AudioSettings, repository: SettingsReposito
                     }
                 )
             }
-            SettingsSection(title = "音频帧时长", description = "帧长越小延迟越低，但对网络抖动更敏感") {
+            SettingsSection(title = stringResource(R.string.settings_frame_title), description = stringResource(R.string.settings_frame_desc)) {
                 SettingsGroup(items = listOf(10, 20).map { frame ->
-                    SettingRowData("$frame ms", if (frame == 10) "推荐 · 延迟更低" else "更稳定", Icons.Default.GraphicEq, frame == settings.frameMs) {
+                    SettingRowData(
+                        "$frame ms",
+                        if (frame == 10) stringResource(R.string.frame_10_note) else stringResource(R.string.frame_20_note),
+                        Icons.Default.GraphicEq,
+                        frame == settings.frameMs,
+                    ) {
                         scope.launch { repository.setFrameMs(frame) }
                     }
                 })
             }
-            SettingsSection(title = "已授权电脑", description = "以下电脑连接本机时无需再次确认") {
+            SettingsSection(title = stringResource(R.string.settings_trusted_title), description = stringResource(R.string.settings_trusted_desc)) {
                 if (trustedPcs.isEmpty()) {
                     Text(
-                        "暂无已授权电脑。电脑主动连接时，可以选择“以后自动同意该设备”。",
+                        stringResource(R.string.settings_trusted_empty),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 8.dp),
@@ -612,20 +680,20 @@ private fun SettingsScreen(settings: AudioSettings, repository: SettingsReposito
                                         onClick = { scope.launch { trustRepository.untrust(id) } },
                                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                                         modifier = Modifier.heightIn(min = 36.dp),
-                                    ) { Text("移除") }
+                                    ) { Text(stringResource(R.string.btn_remove)) }
                                 }
                             }
                         }
                     }
                 }
             }
-            SettingsSection(title = "接收格式", description = "本机作为接收端解码播放的音频格式") {
+            SettingsSection(title = stringResource(R.string.settings_format_title), description = stringResource(R.string.settings_format_desc)) {
                 ProtocolInfoGroup()
             }
-            SettingsSection(title = "关于", description = null) {
+            SettingsSection(title = stringResource(R.string.settings_about), description = null) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ProtocolInfoRow("多设备同步", "已启用 · 时钟对齐播放")
-                    ProtocolInfoRow("传输协议", "UDP 局域网 · Opus 编码")
+                    ProtocolInfoRow(stringResource(R.string.about_sync), stringResource(R.string.about_sync_value))
+                    ProtocolInfoRow(stringResource(R.string.about_protocol), stringResource(R.string.about_protocol_value))
                 }
             }
         }
@@ -648,10 +716,10 @@ private fun SettingsSection(title: String, description: String?, content: @Compo
 @Composable
 private fun ProtocolInfoGroup() {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        ProtocolInfoRow("编码器", "Opus")
-        ProtocolInfoRow("采样率", "${SteamVoiceProtocol.sampleRate} Hz")
-        ProtocolInfoRow("声道", "${SteamVoiceProtocol.channels} 声道立体声")
-        ProtocolInfoRow("支持帧长", SteamVoiceProtocol.supportedFrameMilliseconds.sorted().joinToString(" / ") { "$it ms" })
+        ProtocolInfoRow(stringResource(R.string.label_codec), "Opus")
+        ProtocolInfoRow(stringResource(R.string.label_sample_rate), "${SteamVoiceProtocol.sampleRate} Hz")
+        ProtocolInfoRow(stringResource(R.string.label_channels), stringResource(R.string.channels_stereo, SteamVoiceProtocol.channels))
+        ProtocolInfoRow(stringResource(R.string.label_frame_lengths), SteamVoiceProtocol.supportedFrameMilliseconds.sorted().joinToString(" / ") { "$it ms" })
     }
 }
 

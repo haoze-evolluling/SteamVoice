@@ -1,5 +1,91 @@
 <resources>
     <string name="app_name">SteamVoice</string>
+
+    <!-- 主屏 -->
+    <string name="receiver_active">正在接收 %1$s 的音频</string>
+    <string name="receiver_idle">接收服务运行中 · 等待电脑连接</string>
+    <string name="receiver_starting">正在启动接收服务…</string>
+    <string name="cd_settings">设置</string>
+    <string name="cd_back">返回</string>
+    <string name="nearby_pcs">附近的电脑</string>
+    <plurals name="device_count">
+        <item quantity="other">%1$d 台</item>
+    </plurals>
+    <string name="pc_denied">电脑端拒绝了连接请求</string>
+    <string name="pc_connect_failed">无法连接 %1$s，请确认电脑端正在运行</string>
+    <string name="btn_connect">连接</string>
+    <string name="btn_disconnect">断开</string>
+    <string name="btn_remove">移除</string>
+    <string name="pc_state_online">在线</string>
+    <string name="pc_state_connecting">连接中…</string>
+    <string name="pc_state_connected">已连接</string>
+    <string name="searching_title">正在搜索附近的电脑</string>
+    <string name="searching_hint">请确认电脑端 SteamVoice 正在运行，且手机和电脑连接到同一 Wi-Fi 网络。</string>
+    <string name="android_device">Android 设备</string>
+    <string name="generic_pc">电脑</string>
+
+    <!-- snackbar 消息 -->
+    <string name="msg_connection_interrupted">%1$s 连接已中断</string>
+    <string name="msg_disconnected">%1$s 已断开连接</string>
+    <string name="msg_connected">已连接 %1$s</string>
+
+    <!-- 授权 -->
+    <string name="auth_title">连接请求</string>
+    <string name="auth_message">%1$s 想要把电脑音频推送到本机播放。</string>
+    <string name="auth_remember">以后自动同意该设备</string>
+    <string name="auth_allow">允许</string>
+    <string name="auth_deny">拒绝</string>
+    <string name="auth_always_allow">总是允许</string>
+
+    <!-- 同步校准 -->
+    <string name="calibrating">同步校准中</string>
+    <string name="calib_synced">已同步</string>
+    <string name="calib_stats">时钟偏差 %1$d ms · 往返 %2$d ms</string>
+    <string name="calib_step_detect">检测</string>
+    <string name="calib_step_calculate">计算</string>
+    <string name="calib_step_sync">同步</string>
+    <string name="calib_step_done">完成</string>
+    <string name="calib_phase_detect">正在检测电脑的音频信号</string>
+    <string name="calib_phase_calculate">测量时钟偏差，与电脑时间基准对时</string>
+    <string name="calib_phase_sync">已对齐时钟，等待统一播放时刻</string>
+    <string name="calib_phase_done">已同步 · 回到正常播放</string>
+
+    <!-- 通知 -->
     <string name="receiver_channel">SteamVoice 接收服务</string>
     <string name="receiver_notification">正在接收电脑音频</string>
+    <string name="receiver_notification_active">正在接收来自 %1$s 的电脑音频</string>
+    <string name="auth_channel">连接请求</string>
+    <string name="auth_notification_text">%1$s 想要把电脑音频推送到本机播放</string>
+
+    <!-- 设置 -->
+    <string name="settings_title">设置</string>
+    <string name="settings_bitrate_title">初始发送码率</string>
+    <string name="settings_bitrate_desc">电脑端发起连接时使用的初始 Opus 码率，播放中会根据网络自动调整</string>
+    <string name="bitrate_recommended">推荐 · 覆盖大多数家庭网络</string>
+    <string name="settings_frame_title">音频帧时长</string>
+    <string name="settings_frame_desc">帧长越小延迟越低，但对网络抖动更敏感</string>
+    <string name="frame_10_note">推荐 · 延迟更低</string>
+    <string name="frame_20_note">更稳定</string>
+    <string name="settings_trusted_title">已授权电脑</string>
+    <string name="settings_trusted_desc">以下电脑连接本机时无需再次确认</string>
+    <string name="settings_trusted_empty">暂无已授权电脑。电脑主动连接时，可以选择“以后自动同意该设备”。</string>
+    <string name="settings_format_title">接收格式</string>
+    <string name="settings_format_desc">本机作为接收端解码播放的音频格式</string>
+    <string name="label_codec">编码器</string>
+    <string name="label_sample_rate">采样率</string>
+    <string name="label_channels">声道</string>
+    <string name="channels_stereo">%1$d 声道立体声</string>
+    <string name="label_frame_lengths">支持帧长</string>
+    <string name="settings_about">关于</string>
+    <string name="about_sync">多设备同步</string>
+    <string name="about_sync_value">已启用 · 时钟对齐播放</string>
+    <string name="about_protocol">传输协议</string>
+    <string name="about_protocol_value">UDP 局域网 · Opus 编码</string>
+
+    <!-- 语言 -->
+    <string name="settings_language_title">语言</string>
+    <string name="settings_language_desc">更改后界面立即生效</string>
+    <string name="lang_system">跟随系统</string>
+    <string name="lang_zh">简体中文</string>
+    <string name="lang_en">English</string>
 </resources>

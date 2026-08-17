@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,21 @@ import (
 	"steamvoice-desktop/internal/protocol"
 	"steamvoice-desktop/internal/stream"
 )
+
+// 用户可见消息以前端可翻译的稳定码（svmsg:<code>[:<detail>]）传递，
+// 前端按界面语言查表翻译；未识别的码或裸文本按原样展示。
+const svmsgPrefix = "svmsg:"
+
+func svMsg(code string) string { return svmsgPrefix + code }
+
+func svMsgf(code string, detail string) string {
+	if detail == "" {
+		return svMsg(code)
+	}
+	return svmsgPrefix + code + ":" + detail
+}
+
+func svErr(code string, detail string) error { return fmt.Errorf("%s", svMsgf(code, detail)) }
 
 type Device struct {
 	Name, Host       string
@@ -267,14 +283,14 @@ func (a *App) Connect(device Device) error {
 		bitrate = 128000
 	}
 	if bitrate != 64000 && bitrate != 96000 && bitrate != 128000 && bitrate != 192000 {
-		return fmt.Errorf("unsupported bitrate: %d", bitrate)
+		return svErr("err_bitrate", strconv.Itoa(bitrate))
 	}
 	frameMs := device.FrameMs
 	if frameMs == 0 {
 		frameMs = 10
 	}
 	if frameMs != 10 && frameMs != 20 {
-		return fmt.Errorf("unsupported frame duration: %d ms", frameMs)
+		return svErr("err_frame", strconv.Itoa(frameMs))
 	}
 	if len(device.SupportedFrameMs) > 0 {
 		supported := false
@@ -285,17 +301,17 @@ func (a *App) Connect(device Device) error {
 			}
 		}
 		if !supported {
-			return fmt.Errorf("receiver does not support %d ms audio frames", frameMs)
+			return svErr("err_frame_receiver", strconv.Itoa(frameMs))
 		}
 	}
 	if !strings.EqualFold(device.Codec, "opus") {
-		return fmt.Errorf("receiver does not support Opus (codec=%s)", device.Codec)
+		return svErr("err_codec", device.Codec)
 	}
 	a.mu.Lock()
 	activeFrameMs := a.frameMs
 	a.mu.Unlock()
 	if activeFrameMs != 0 && activeFrameMs != frameMs {
-		return fmt.Errorf("已连接的接收端正在使用 %d ms 音频帧，请先断开全部设备再更改帧时长", activeFrameMs)
+		return svErr("err_frame_in_use", strconv.Itoa(activeFrameMs))
 	}
 	sender, err := stream.NewSender(fmt.Sprintf("%s:%d", device.Host, device.Port), bitrate, frameMs)
 	if err != nil {
@@ -306,14 +322,14 @@ func (a *App) Connect(device Device) error {
 	// sessions re-confirm instantly because the receiver started them.
 	if !sender.RequestConnection(a.store.DeviceID, a.pcName(), authorizationTimeout) {
 		_ = sender.Close()
-		return fmt.Errorf("接收端未同意连接（对方拒绝了请求、长时间未确认或版本过旧）")
+		return svErr("err_denied", "")
 	}
 	encoder, err := codec.NewOpusEncoder(bitrate, frameMs)
 	if err != nil {
 		_ = sender.Close()
-		return fmt.Errorf("初始化 Opus 编码器失败: %w", err)
+		return svErr("err_opus_init", err.Error())
 	}
-	session := &deviceSession{device: device, sender: sender, encoder: encoder, status: DeviceStatus{DeviceID: device.ID, Name: device.Name, Connected: true, Message: "正在传输系统音频", Bitrate: bitrate, FrameMs: frameMs, Phase: 0}}
+	session := &deviceSession{device: device, sender: sender, encoder: encoder, status: DeviceStatus{DeviceID: device.ID, Name: device.Name, Connected: true, Message: svMsg("streaming"), Bitrate: bitrate, FrameMs: frameMs, Phase: 0}}
 	sender.SetFeedbackCallback(func(f protocol.ReceiverFeedback) {
 		if f.SyncState == protocol.SyncUnknown {
 			return
@@ -371,14 +387,14 @@ func (a *App) Connect(device Device) error {
 	if a.frameMs != 0 && a.frameMs != frameMs {
 		a.mu.Unlock()
 		_ = sender.Close()
-		return fmt.Errorf("已连接的接收端正在使用 %d ms 音频帧，请先断开全部设备再更改帧时长", a.frameMs)
+		return svErr("err_frame_in_use", strconv.Itoa(a.frameMs))
 	}
 	if a.capture == nil {
 		c, err := capture.Start(frameMs, a.onPCM)
 		if err != nil {
 			a.mu.Unlock()
 			_ = sender.Close()
-			return fmt.Errorf("启动 WASAPI 系统音频采集失败: %w", err)
+			return svErr("err_capture", err.Error())
 		}
 		a.capture = c
 		a.frameMs = frameMs
@@ -419,7 +435,7 @@ func (a *App) Disconnect(deviceID string) error {
 	}
 	_ = session.sender.SendBye(a.store.DeviceID)
 	_ = session.sender.Close()
-	a.emitStatus(DeviceStatus{DeviceID: deviceID, Name: session.device.Name, Message: "已断开连接"})
+	a.emitStatus(DeviceStatus{DeviceID: deviceID, Name: session.device.Name, Message: svMsg("disconnected")})
 	return nil
 }
 
@@ -433,9 +449,9 @@ func (a *App) GetStatus() Status {
 	sort.Slice(status.Devices, func(i, j int) bool { return status.Devices[i].Name < status.Devices[j].Name })
 	status.ConnectedCount = len(status.Devices)
 	if status.ConnectedCount == 0 {
-		status.Message = "未连接接收端"
+		status.Message = svMsg("idle")
 	} else {
-		status.Message = fmt.Sprintf("已连接 %d 台接收端，正在发送电脑音频", status.ConnectedCount)
+		status.Message = svMsgf("connected", strconv.Itoa(status.ConnectedCount))
 	}
 	return status
 }
@@ -479,7 +495,7 @@ func (a *App) RespondConnection(requestID string, allow bool, remember bool) err
 	entry, ok := a.pending[requestID]
 	if !ok {
 		a.mu.Unlock()
-		return fmt.Errorf("连接请求已过期或已处理")
+		return svErr("err_request_expired", "")
 	}
 	delete(a.pending, requestID)
 	delete(a.pendingByDevice, entry.peer.DeviceID)
@@ -487,7 +503,7 @@ func (a *App) RespondConnection(requestID string, allow bool, remember bool) err
 	listener := a.listener
 	a.mu.Unlock()
 	if listener == nil {
-		return fmt.Errorf("控制通道不可用")
+		return svErr("err_control", "")
 	}
 	if remember && allow {
 		if err := a.store.Authorize(entry.peer.DeviceID, entry.peer.Name); err != nil {
@@ -495,13 +511,13 @@ func (a *App) RespondConnection(requestID string, allow bool, remember bool) err
 		}
 	}
 	if err := listener.Respond(entry.peer, allow); err != nil {
-		return fmt.Errorf("发送授权结果失败: %w", err)
+		return svErr("err_respond", err.Error())
 	}
 	if allow {
 		go func() {
 			if err := a.Connect(a.deviceFromPeer(entry.peer)); err != nil {
 				log.Printf("inbound connect to %s failed: %v", entry.peer.Name, err)
-				a.emitStatus(DeviceStatus{DeviceID: entry.peer.DeviceID, Name: entry.peer.Name, Message: "连接失败: " + err.Error()})
+				a.emitStatus(DeviceStatus{DeviceID: entry.peer.DeviceID, Name: entry.peer.Name, Message: svMsgf("err_connect", err.Error())})
 			}
 		}()
 	}
@@ -582,7 +598,7 @@ func (a *App) expireRequest(requestID string, entry *pendingRequest) {
 func (a *App) deviceFromPeer(peer gateway.Peer) Device {
 	name := strings.TrimSpace(peer.Name)
 	if name == "" {
-		name = "Android 设备"
+		name = "Android device"
 	}
 	a.mu.Lock()
 	bitrate, frameMs := a.localBitrate, a.localFrameMs
@@ -710,9 +726,9 @@ func (a *App) checkStaleSessions() []DeviceStatus {
 		}
 		s.stale = stale
 		if stale {
-			s.status.Message = "接收端无响应"
+			s.status.Message = svMsg("receiver_unresponsive")
 		} else {
-			s.status.Message = "正在传输系统音频"
+			s.status.Message = svMsg("streaming")
 		}
 		updated = append(updated, s.status)
 	}
@@ -730,7 +746,7 @@ func (a *App) checkStaleSessions() []DeviceStatus {
 	for _, s := range dropped {
 		_ = s.sender.SendBye(a.store.DeviceID)
 		_ = s.sender.Close()
-		updated = append(updated, DeviceStatus{DeviceID: s.device.ID, Name: s.device.Name, Message: "接收端长时间无响应，已断开"})
+		updated = append(updated, DeviceStatus{DeviceID: s.device.ID, Name: s.device.Name, Message: svMsg("receiver_dropped")})
 	}
 	return updated
 }

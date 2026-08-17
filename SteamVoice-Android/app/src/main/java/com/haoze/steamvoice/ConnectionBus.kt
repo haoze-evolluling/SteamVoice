@@ -25,6 +25,9 @@ data class PcAuthPrompt(
 /** 与电脑时间基准的校准进度，驱动连接期间的同步校准动画。 */
 enum class CalibrationPhase { DETECT, CALCULATE, SYNC, DONE }
 
+/** 待展示的 snackbar 消息：资源 ID + 格式参数，由 UI 在展示时按当前语言解析。 */
+class UiMessage(val resId: Int, val args: Array<out Any>)
+
 data class CalibrationState(
     val pcName: String,
     val phase: CalibrationPhase,
@@ -43,7 +46,7 @@ object ConnectionBus {
 
     /** 接收服务发布的校准进度；断开连接时置回 null。 */
     val calibration = MutableStateFlow<CalibrationState?>(null)
-    val messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val messages = MutableSharedFlow<UiMessage>(extraBufferCapacity = 8)
 
     /** 连接器在收到电脑同意后排队登记发送方，接收循环随即采纳。 */
     @Volatile
@@ -55,7 +58,7 @@ object ConnectionBus {
     /** 用户在 UI 上主动断开的电脑标识，由接收循环消费。 */
     val localDisconnects = ConcurrentLinkedQueue<String>()
 
-    fun notify(message: String) {
-        messages.tryEmit(message)
+    fun notify(resId: Int, vararg args: Any) {
+        messages.tryEmit(UiMessage(resId, args))
     }
 }

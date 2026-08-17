@@ -1,5 +1,6 @@
 package com.haoze.steamvoice
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -86,22 +87,28 @@ class AudioReceiverService : Service() {
 
     private fun selfIdBlocking(): String = runBlocking { SettingsRepository(applicationContext).settings.first().deviceId }
 
-    private fun notification(pcName: String?) = NotificationCompat.Builder(this, "steamvoice-receiver")
-        .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
-        .setContentTitle(getString(R.string.app_name))
-        .setContentText(if (pcName == null) getString(R.string.receiver_notification) else "正在接收来自 $pcName 的电脑音频")
-        .setOngoing(true)
-        .build()
-        .also {
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(NotificationChannel("steamvoice-receiver", getString(R.string.receiver_channel), NotificationManager.IMPORTANCE_LOW))
-        }
+    private fun notification(pcName: String?): Notification {
+        val loc = LocaleManager.wrap(this)
+        return NotificationCompat.Builder(this, "steamvoice-receiver")
+            .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
+            .setContentTitle(loc.getString(R.string.app_name))
+            .setContentText(
+                if (pcName == null) loc.getString(R.string.receiver_notification)
+                else loc.getString(R.string.receiver_notification_active, pcName)
+            )
+            .setOngoing(true)
+            .build()
+            .also {
+                val manager = getSystemService(NotificationManager::class.java)
+                manager.createNotificationChannel(NotificationChannel("steamvoice-receiver", loc.getString(R.string.receiver_channel), NotificationManager.IMPORTANCE_LOW))
+            }
+    }
 
     private fun registerService() {
         // onStartCommand 在每次前台服务被拉起时都会触发（例如发起连接前的
         // ensureReceiverRunning）；重复注册同名服务会与自身记录冲突导致广播异常。
         if (registration != null) return
-        val settings = runBlocking { SettingsRepository(this@AudioReceiverService).settings.first() }; nsd=getSystemService(Context.NSD_SERVICE) as NsdManager; val friendly=DeviceIdentity.friendlyName(); val info=NsdServiceInfo().apply { serviceName="SteamVoice-$friendly"; serviceType="_steamvoice._udp."; port=SteamVoiceProtocol.port; setAttribute("role", "speaker"); setAttribute("device_id", settings.deviceId); setAttribute("codec", "opus"); setAttribute("sample_rate", SteamVoiceProtocol.sampleRate.toString()); setAttribute("channels", SteamVoiceProtocol.channels.toString()); setAttribute("bitrate", (settings.initialBitrateKbps * 1000).toString()); setAttribute("frame_ms", SteamVoiceProtocol.supportedFrameMilliseconds.joinToString(",")); setAttribute("current_frame_ms", settings.frameMs.toString()); setAttribute("settings_updated_at", settings.updatedAtMs.toString()); setAttribute("settings_device_id", settings.deviceId) }; registration=object:NsdManager.RegistrationListener { override fun onServiceRegistered(i:NsdServiceInfo){ Log.i(TAG,"advertising ${i.serviceName}") }; override fun onRegistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD registration failed: $e"); registration = null }; override fun onServiceUnregistered(i:NsdServiceInfo){ registration = null }; override fun onUnregistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD unregistration failed: $e") } }; nsd?.registerService(info,NsdManager.PROTOCOL_DNS_SD,registration) }
+        val settings = runBlocking { SettingsRepository(this@AudioReceiverService).settings.first() }; nsd=getSystemService(Context.NSD_SERVICE) as NsdManager; val friendly=DeviceIdentity.friendlyName(LocaleManager.wrap(this)); val info=NsdServiceInfo().apply { serviceName="SteamVoice-$friendly"; serviceType="_steamvoice._udp."; port=SteamVoiceProtocol.port; setAttribute("role", "speaker"); setAttribute("device_id", settings.deviceId); setAttribute("codec", "opus"); setAttribute("sample_rate", SteamVoiceProtocol.sampleRate.toString()); setAttribute("channels", SteamVoiceProtocol.channels.toString()); setAttribute("bitrate", (settings.initialBitrateKbps * 1000).toString()); setAttribute("frame_ms", SteamVoiceProtocol.supportedFrameMilliseconds.joinToString(",")); setAttribute("current_frame_ms", settings.frameMs.toString()); setAttribute("settings_updated_at", settings.updatedAtMs.toString()); setAttribute("settings_device_id", settings.deviceId) }; registration=object:NsdManager.RegistrationListener { override fun onServiceRegistered(i:NsdServiceInfo){ Log.i(TAG,"advertising ${i.serviceName}") }; override fun onRegistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD registration failed: $e"); registration = null }; override fun onServiceUnregistered(i:NsdServiceInfo){ registration = null }; override fun onUnregistrationFailed(i:NsdServiceInfo,e:Int){ Log.e(TAG,"NSD unregistration failed: $e") } }; nsd?.registerService(info,NsdManager.PROTOCOL_DNS_SD,registration) }
 
     private fun receiveLoop() {
         val repository = SettingsRepository(this@AudioReceiverService)
@@ -219,7 +226,7 @@ class AudioReceiverService : Service() {
                                 socket?.send(DatagramPacket(bye, bye.size, pc.address, SteamVoiceProtocol.desktopControlPort))
                             }
                         }
-                        ConnectionBus.notify("${gone?.name ?: "电脑"} 连接已中断")
+                        ConnectionBus.notify(R.string.msg_connection_interrupted, gone?.name ?: LocaleManager.wrap(this).getString(R.string.generic_pc))
                     }
                     if (activePc != null && System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate, currentSyncState(), clockSync.medianOffsetMs()?.toInt() ?: 0, clockSync.lastRttMs()?.toInt() ?: 0); lastFeedback = System.nanoTime() }
                     publishCalibration()
@@ -315,7 +322,7 @@ class AudioReceiverService : Service() {
                     activePc = null
                     ConnectionBus.activePc.value = null
                     updateForegroundNotification(null)
-                    ConnectionBus.notify("${gone?.name ?: "电脑"} 已断开连接")
+                    ConnectionBus.notify(R.string.msg_disconnected, gone?.name ?: LocaleManager.wrap(this).getString(R.string.generic_pc))
                 }
             }
             ConnControl.KIND_RESPONSE -> {} // 响应发给发起连接的临时 socket，不会到这里
@@ -352,7 +359,7 @@ class AudioReceiverService : Service() {
         activePc = pc
         ConnectionBus.activePc.value = pc
         updateForegroundNotification(pc.name)
-        ConnectionBus.notify("已连接 ${pc.name}")
+        ConnectionBus.notify(R.string.msg_connected, pc.name)
     }
 
     private fun respondConn(address: InetAddress, port: Int, allow: Boolean) {
@@ -375,7 +382,8 @@ class AudioReceiverService : Service() {
 
     private fun postAuthNotification(prompt: PcAuthPrompt) {
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("steamvoice-auth", "连接请求", NotificationManager.IMPORTANCE_HIGH))
+        val loc = LocaleManager.wrap(this)
+        manager.createNotificationChannel(NotificationChannel("steamvoice-auth", loc.getString(R.string.auth_channel), NotificationManager.IMPORTANCE_HIGH))
         val openApp = PendingIntent.getActivity(
             this,
             prompt.requestId.hashCode(),
@@ -384,13 +392,13 @@ class AudioReceiverService : Service() {
         )
         val notification = NotificationCompat.Builder(this, "steamvoice-auth")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("连接请求")
-            .setContentText("${prompt.name} 想要把电脑音频推送到本机播放")
+            .setContentTitle(loc.getString(R.string.auth_title))
+            .setContentText(loc.getString(R.string.auth_notification_text, prompt.name))
             .setContentIntent(openApp)
             .setAutoCancel(true)
-            .addAction(0, "拒绝", respondIntent(prompt, false, false))
-            .addAction(0, "允许", respondIntent(prompt, true, false))
-            .addAction(0, "总是允许", respondIntent(prompt, true, true))
+            .addAction(0, loc.getString(R.string.auth_deny), respondIntent(prompt, false, false))
+            .addAction(0, loc.getString(R.string.auth_allow), respondIntent(prompt, true, false))
+            .addAction(0, loc.getString(R.string.auth_always_allow), respondIntent(prompt, true, true))
             .build()
         manager.notify(AUTH_NOTIFICATION_ID, notification)
     }

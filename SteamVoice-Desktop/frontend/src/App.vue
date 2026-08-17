@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { Connect, DiscoverDevices, Disconnect, GetStatus, GetIdentity, ListAuthorizedDevices, RemoveAuthorizedDevice, RespondConnection, SaveLocalSettings } from '../wailsjs/go/main/App';
 import { EventsOn, WindowSetDarkTheme, WindowSetLightTheme, WindowSetSystemDefaultTheme } from '../wailsjs/runtime/runtime';
+import { STREAMING_CODE, language, locale, setLanguage, t, translateBackend, type LanguagePref, type ParamValue } from './i18n';
 
 type Theme = 'light' | 'dark' | 'system';
 type Settings = { bitrate: number; frameMs: number; theme: Theme; updatedAtMs: number; deviceId: string };
@@ -10,8 +11,9 @@ type DeviceStatus = { deviceId: string; name: string; connected: boolean; messag
 type ConnRequest = { requestId: string; deviceId: string; name: string; host: string };
 type AuthorizedDevice = { ID: string; Name: string; AddedAtMs: number };
 type Calibration = { phase: number; offsetMs: number; rttMs: number; updatedAt: number };
-const phaseLabels = ['检测', '计算', '同步', '完成'];
-const phaseHints = ['检测接收信号', '测量时钟偏差', '对齐播放时刻', '同步播放中'];
+const phaseLabels = computed(() => [t('phase.detect'), t('phase.calculate'), t('phase.sync'), t('phase.done')]);
+const phaseHints = computed(() => [t('phaseHint.detect'), t('phaseHint.calculate'), t('phaseHint.sync'), t('phaseHint.done')]);
+const languageOptions: LanguagePref[] = ['system', 'zh', 'en'];
 const settingsKey = 'steamvoice.desktop.settings.v2';
 const deviceIdKey = 'steamvoice.desktop.device_id';
 const deviceId = localStorage.getItem(deviceIdKey) ?? crypto.randomUUID();
@@ -21,7 +23,22 @@ const settings = ref<Settings>({ ...defaults });
 const themeOptions: Theme[] = ['light', 'dark', 'system'];
 const page = ref<'devices' | 'settings'>('devices');
 const devices = ref<Device[]>([]);
-const status = ref('未连接接收端');
+// 状态条文案统一在展示时翻译：key 为前端文案键，backend 为 Go 的 svmsg 码，
+// 语言切换后无需等待下一条消息即自动切换显示语言。
+type StatusInfo = { kind: 'key' | 'backend'; value: string; params?: Record<string, ParamValue> } | null;
+const statusInfo = ref<StatusInfo>(null);
+const status = computed(() => {
+  const info = statusInfo.value;
+  if (!info) return t('status.idle');
+  return info.kind === 'key' ? t(info.value, info.params) : translateBackend(info.value);
+});
+function setStatus(key: string, params?: Record<string, ParamValue>) { statusInfo.value = { kind: 'key', value: key, params }; }
+function setStatusBackend(raw: string) { statusInfo.value = { kind: 'backend', value: raw }; }
+function setErrorStatus(prefixKey: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.startsWith('svmsg:')) setStatusBackend(message);
+  else setStatus(prefixKey, { detail: message });
+}
 const connected = ref<Record<string, DeviceStatus>>({});
 const connRequests = ref<ConnRequest[]>([]);
 const rememberChoice = ref(true);
@@ -33,7 +50,7 @@ const syncFlash = ref(false);
 let syncFlashTimer: number | undefined;
 const connectedCount = computed(() => Object.keys(connected.value).length);
 const connectedDevices = computed(() => devices.value.filter((device) => connected.value[device.id]));
-const headerStatus = computed(() => (connectedCount.value > 0 ? `已连接 ${connectedCount.value} 台接收端${connectedCount.value > 1 ? ' · 同步播放中' : '，正在发送电脑音频'}` : status.value));
+const headerStatus = computed(() => (connectedCount.value > 0 ? t(connectedCount.value > 1 ? 'header.multi' : 'header.single', { n: connectedCount.value }) : status.value));
 const supportedFrames = computed(() => {
   if (connectedDevices.value.length) return connectedDevices.value.reduce((acc: number[], device) => acc.filter((frame) => device.supportedFrameMs.includes(frame)), [10, 20]);
   return devices.value.length ? Array.from(new Set(devices.value.flatMap((device) => device.supportedFrameMs))) : [10, 20];
@@ -74,29 +91,29 @@ watch(allCalibrated, (now, was) => {
 });
 function showSyncPanel(): boolean { return calibratingCount.value > 0 || (syncFlash.value && connectedCount.value > 1); }
 function syncSummary(): string {
-  return connectedDevices.value.map((device) => `${device.name} 偏差 ${Math.abs(calibration.value[device.id]?.offsetMs ?? 0)} ms`).join(' · ');
+  return connectedDevices.value.map((device) => t('sync.summaryItem', { name: device.name, offset: Math.abs(calibration.value[device.id]?.offsetMs ?? 0) })).join(' · ');
 }
 function newer(a: { updatedAtMs: number; deviceId: string }, b: { updatedAtMs: number; deviceId: string }) { return a.updatedAtMs > b.updatedAtMs || (a.updatedAtMs === b.updatedAtMs && a.deviceId > b.deviceId); }
 function touch(next: Partial<Settings>) { settings.value = { ...settings.value, ...next, updatedAtMs: Date.now(), deviceId }; }
-function statusMessage(raw: any, fallback: string): string {
+function statusMessage(raw: any): string {
   const value = raw?.message ?? raw?.Message;
-  return typeof value === 'string' && value.trim() ? value : fallback;
+  return typeof value === 'string' && value.trim() ? value : '';
 }
 function deviceInfo(device: Device): string {
   const value = connected.value[device.id];
   if (!value) return '';
-  if (value.message && value.message !== '正在传输系统音频') return value.message;
+  if (value.message && value.message !== STREAMING_CODE) return translateBackend(value.message);
   return value.bitrate ? `${value.bitrate / 1000} kbps` : '';
 }
 function deviceStalled(device: Device): boolean {
   const value = connected.value[device.id];
-  return !!value && !!value.message && value.message !== '正在传输系统音频';
+  return !!value && !!value.message && value.message !== STREAMING_CODE;
 }
 function applyTheme(theme: Theme) {
   document.documentElement.dataset.theme = theme;
   if (theme === 'dark') WindowSetDarkTheme(); else if (theme === 'light') WindowSetLightTheme(); else WindowSetSystemDefaultTheme();
 }
-async function discover() { devices.value = []; try { await DiscoverDevices(); } catch { status.value = '无法发现接收端'; } }
+async function discover() { devices.value = []; try { await DiscoverDevices(); } catch { setStatus('status.discoverFailed'); } }
 async function refreshAuthorized() {
   try {
     const list: any = await ListAuthorizedDevices();
@@ -109,28 +126,29 @@ async function respondConnection(allow: boolean) {
   connRequests.value = connRequests.value.slice(1);
   try {
     await RespondConnection(request.requestId, allow, rememberChoice.value);
-    if (allow) status.value = `已允许 ${request.name} 连接`;
-  } catch (error) { status.value = `授权失败：${error instanceof Error ? error.message : String(error)}`; }
+    if (allow) setStatus('status.allowed', { name: request.name });
+  } catch (error) { setErrorStatus('status.respondFailed', error); }
 }
 async function removeAuthorized(device: AuthorizedDevice) {
-  try { await RemoveAuthorizedDevice(device.ID); await refreshAuthorized(); } catch { status.value = '移除授权失败'; }
+  try { await RemoveAuthorizedDevice(device.ID); await refreshAuthorized(); } catch { setStatus('status.removeFailed'); }
 }
 async function connect(device: Device) {
   if (connected.value[device.id] || connecting.value[device.id]) return;
-  if (!device.supportedFrameMs.includes(settings.value.frameMs)) { status.value = `该接收端不支持 ${settings.value.frameMs} ms 音频帧`; return; }
+  if (!device.supportedFrameMs.includes(settings.value.frameMs)) { setStatus('status.frameUnsupported', { frame: settings.value.frameMs }); return; }
   connecting.value[device.id] = true;
-  status.value = `正在等待 ${device.name} 确认连接请求…`;
+  setStatus('status.waitingConfirm', { name: device.name });
   try {
     await Connect({ Name: device.name, Host: device.host, Port: device.port, ID: device.id, Codec: device.codec, SampleRate: device.sampleRate, Channels: device.channels, Bitrate: settings.value.bitrate, FrameMs: settings.value.frameMs, SupportedFrameMs: device.supportedFrameMs, UpdatedAtMs: settings.value.updatedAtMs, SettingsDeviceID: settings.value.deviceId } as any);
-    status.value = '';
-  } catch (error) { status.value = `连接失败：${error instanceof Error ? error.message : String(error)}`; }
+    setStatus('');
+  } catch (error) { setErrorStatus('status.connectFailed', error); }
   connecting.value[device.id] = false;
 }
 async function disconnect(device: Device) {
-  try { await Disconnect(device.id); delete connected.value[device.id]; } catch { status.value = '断开连接失败'; }
+  try { await Disconnect(device.id); delete connected.value[device.id]; } catch { setStatus('status.disconnectFailed'); }
 }
 watch(settings, (next) => { localStorage.setItem(settingsKey, JSON.stringify(next)); applyTheme(next.theme); SaveLocalSettings(next.bitrate, next.frameMs).catch(() => {}); }, { deep: true });
 watch(page, (next) => { if (next === 'settings') { refreshAuthorized(); GetIdentity().then((value: any) => { identity.value = { deviceId: String(value?.deviceId ?? value?.DeviceID ?? ''), name: String(value?.name ?? value?.Name ?? '') }; }).catch(() => {}); } });
+watch(locale, () => { document.documentElement.lang = locale.value === 'zh' ? 'zh-CN' : 'en'; }, { immediate: true });
 onMounted(async () => {
   try { settings.value = normalizeSettings(JSON.parse(localStorage.getItem(settingsKey) ?? 'null')); } catch { settings.value = { ...defaults }; }
   applyTheme(settings.value.theme);
@@ -139,8 +157,8 @@ onMounted(async () => {
     const value: any = await GetStatus();
     const list: any[] = Array.isArray(value?.devices) ? value.devices : Array.isArray(value?.Devices) ? value.Devices : [];
     for (const item of list) { const entry = normalizeDeviceStatus(item); if (entry.connected && entry.deviceId) { connected.value[entry.deviceId] = entry; calibration.value[entry.deviceId] = { phase: entry.phase, offsetMs: 0, rttMs: 0, updatedAt: Date.now() }; } }
-    if (!connectedCount.value) status.value = statusMessage(value, status.value);
-  } catch { status.value = '无法获取连接状态'; }
+    if (!connectedCount.value) { const message = statusMessage(value); if (message) setStatusBackend(message); }
+  } catch { setStatus('status.getStatusFailed'); }
   tickTimer = window.setInterval(() => { nowTick.value = Date.now(); }, 1000);
   EventsOn('device:found', (raw: any) => { const device = normalizeDevice(raw); if (device.updatedAtMs && newer(device, settings.value)) { settings.value = { ...settings.value, bitrate: device.bitrate, frameMs: device.frameMs, updatedAtMs: device.updatedAtMs, deviceId: device.settingsDeviceId || settings.value.deviceId }; } const index = devices.value.findIndex((item) => item.id === device.id); if (index >= 0) devices.value[index] = device; else devices.value.push(device); });
   EventsOn('device:lost', (raw: any) => {
@@ -157,7 +175,7 @@ onMounted(async () => {
     } else {
       delete connected.value[value.deviceId];
       delete calibration.value[value.deviceId];
-      if (value.message) status.value = value.message;
+      if (value.message) setStatusBackend(value.message);
     }
   });
   EventsOn('calibration:progress', (raw: any) => {
@@ -165,7 +183,7 @@ onMounted(async () => {
     if (!id || !connected.value[id]) return;
     calibration.value[id] = { phase: Math.min(3, Math.max(0, Number(raw?.phase ?? raw?.Phase ?? 0) || 0)), offsetMs: Number(raw?.offsetMs ?? raw?.OffsetMs ?? 0) || 0, rttMs: Number(raw?.rttMs ?? raw?.RttMs ?? 0) || 0, updatedAt: Date.now() };
   });
-  EventsOn('conn:request', (raw: any) => { const request: ConnRequest = { requestId: String(raw?.requestId ?? raw?.RequestID ?? ''), deviceId: String(raw?.deviceId ?? raw?.DeviceID ?? ''), name: String(raw?.name ?? raw?.Name ?? '未知设备'), host: String(raw?.host ?? raw?.Host ?? '') }; if (request.requestId && !connRequests.value.some((item) => item.requestId === request.requestId)) connRequests.value = [...connRequests.value, request]; rememberChoice.value = true; });
+  EventsOn('conn:request', (raw: any) => { const request: ConnRequest = { requestId: String(raw?.requestId ?? raw?.RequestID ?? ''), deviceId: String(raw?.deviceId ?? raw?.DeviceID ?? ''), name: String(raw?.name ?? raw?.Name ?? '') || t('modal.unknownDevice'), host: String(raw?.host ?? raw?.Host ?? '') }; if (request.requestId && !connRequests.value.some((item) => item.requestId === request.requestId)) connRequests.value = [...connRequests.value, request]; rememberChoice.value = true; });
   EventsOn('conn:cancelled', (requestId: unknown) => { connRequests.value = connRequests.value.filter((item) => item.requestId !== String(requestId)); });
   discover();
 });
@@ -175,19 +193,19 @@ onUnmounted(() => { window.clearInterval(tickTimer); window.clearTimeout(syncFla
 <template>
   <main>
     <header>
-      <div><p class="eyebrow">电脑音频发送端</p><h1>SteamVoice</h1></div>
-      <div class="header-actions"><span :class="['status', connectedCount ? 'live' : '']">{{ headerStatus }}</span><button class="secondary" @click="page = page === 'settings' ? 'devices' : 'settings'">{{ page === 'settings' ? '返回' : '设置' }}</button></div>
+      <div><p class="eyebrow">{{ t('header.eyebrow') }}</p><h1>SteamVoice</h1></div>
+      <div class="header-actions"><span :class="['status', connectedCount ? 'live' : '']">{{ headerStatus }}</span><button class="secondary" @click="page = page === 'settings' ? 'devices' : 'settings'">{{ page === 'settings' ? t('header.back') : t('header.settings') }}</button></div>
     </header>
 
     <section v-if="page === 'devices'">
-      <div class="section-head"><div><h2>可用接收端</h2><p>同一局域网内已启动接收服务的设备，可同时连接多台外放</p></div><button @click="discover">重新扫描</button></div>
+      <div class="section-head"><div><h2>{{ t('devices.title') }}</h2><p>{{ t('devices.hint') }}</p></div><button @click="discover">{{ t('devices.rescan') }}</button></div>
       <Transition name="fold">
         <div v-if="showSyncPanel()" class="sync-panel" :class="{ done: allCalibrated }">
           <div class="sync-head">
             <span class="pc-chip">PC</span>
             <div class="sync-title">
-              <h3>{{ allCalibrated ? '多设备同步完成' : '正在同步校准多台设备' }}</h3>
-              <p>{{ allCalibrated ? '各设备已对齐统一时间基准，回到正常播放' : '正在对齐各设备的播放时钟，校准过程不会产生跳音' }}</p>
+              <h3>{{ allCalibrated ? t('sync.doneTitle') : t('sync.busyTitle') }}</h3>
+              <p>{{ allCalibrated ? t('sync.doneHint') : t('sync.busyHint') }}</p>
             </div>
             <span class="wave lg" aria-hidden="true"><i v-for="n in 14" :key="n" :style="{ animationDelay: `${n * 70}ms` }"></i></span>
           </div>
@@ -197,14 +215,14 @@ onUnmounted(() => { window.clearInterval(tickTimer); window.clearTimeout(syncFla
               <span class="node-chip" :class="'phase-' + devicePhase(device)">{{ (device.name.trim()[0] || 'S').toUpperCase() }}</span>
               <span class="node-meta">
                 <strong>{{ device.name }}</strong>
-                <span :class="{ ok: devicePhase(device) >= 3 }">{{ phaseHints[devicePhase(device)] }}<template v-if="devicePhase(device) >= 2 && calibration[device.id]"> · 偏差 {{ Math.abs(calibration[device.id].offsetMs) }} ms · 往返 {{ calibration[device.id].rttMs }} ms</template></span>
+                <span :class="{ ok: devicePhase(device) >= 3 }">{{ phaseHints[devicePhase(device)] }}<template v-if="devicePhase(device) >= 2 && calibration[device.id]"> · {{ t('calib.stats', { offset: Math.abs(calibration[device.id].offsetMs), rtt: calibration[device.id].rttMs }) }}</template></span>
               </span>
               <span class="mini-steps" aria-hidden="true"><i v-for="(label, i) in phaseLabels" :key="label" :class="{ active: i === devicePhase(device), done: i < devicePhase(device) }"></i></span>
             </div>
           </div>
         </div>
       </Transition>
-      <div v-if="devices.length" class="devices"><article v-for="device in devices" :key="device.id" :class="{ live: connected[device.id] }"><div class="speaker">S</div><div><h3>{{ device.name }}</h3><p>{{ device.host }}:{{ device.port }} · 支持 {{ device.supportedFrameMs.join('/') }} ms<span v-if="deviceInfo(device)" :class="['live-info', { warn: deviceStalled(device) }]"> · {{ deviceInfo(device) }}</span></p>
+      <div v-if="devices.length" class="devices"><article v-for="device in devices" :key="device.id" :class="{ live: connected[device.id] }"><div class="speaker">S</div><div><h3>{{ device.name }}</h3><p>{{ device.host }}:{{ device.port }} · {{ t('device.supports', { frames: device.supportedFrameMs.join('/') }) }}<span v-if="deviceInfo(device)" :class="['live-info', { warn: deviceStalled(device) }]"> · {{ deviceInfo(device) }}</span></p>
         <Transition name="fade">
           <div v-if="connected[device.id] && devicePhase(device) < 3" class="calib-row">
             <span class="wave" aria-hidden="true"><i v-for="n in 10" :key="n" :style="{ animationDelay: `${n * 80}ms` }"></i></span>
@@ -214,43 +232,44 @@ onUnmounted(() => { window.clearInterval(tickTimer); window.clearTimeout(syncFla
             <span class="calib-hint">{{ phaseHints[devicePhase(device)] }}</span>
           </div>
         </Transition>
-      </div><button v-if="connected[device.id]" class="secondary" @click="disconnect(device)">断开</button><button v-else-if="connecting[device.id]" class="secondary" disabled>等待确认…</button><button v-else @click="connect(device)">连接</button></article></div>
-      <div v-else class="empty"><span class="spinner"></span>正在扫描局域网接收端…<p class="empty-hint">请确认手机端 SteamVoice 已打开并连接到同一 Wi-Fi</p></div>
-      <p v-if="connectedCount > 1 && !showSyncPanel() && allCalibrated" class="sync-note">♪ 多台接收端已按统一时间基准同步播放，自动校准时不会产生跳音</p>
+      </div><button v-if="connected[device.id]" class="secondary" @click="disconnect(device)">{{ t('device.disconnect') }}</button><button v-else-if="connecting[device.id]" class="secondary" disabled>{{ t('device.waiting') }}</button><button v-else @click="connect(device)">{{ t('device.connect') }}</button></article></div>
+      <div v-else class="empty"><span class="spinner"></span>{{ t('empty.scanning') }}<p class="empty-hint">{{ t('empty.hint') }}</p></div>
+      <p v-if="connectedCount > 1 && !showSyncPanel() && allCalibrated" class="sync-note">{{ t('sync.note') }}</p>
     </section>
 
     <section v-else class="settings">
-      <div class="section-head"><div><h2>设置</h2><p>音频参数会在下一次连接时生效</p></div></div>
-      <fieldset><legend>初始 Opus 码率</legend><label v-for="bitrate in [64000, 96000, 128000, 192000]" :key="bitrate" class="choice"><input v-model="settings.bitrate" @change="touch({ bitrate })" type="radio" name="bitrate" :value="bitrate"><span>{{ bitrate / 1000 }} kbps</span></label></fieldset>
-      <fieldset><legend>音频帧时长</legend><label v-for="frame in [10, 20]" :key="frame" class="choice" :class="{ disabled: !supportedFrames.includes(frame) }"><input v-model="settings.frameMs" @change="touch({ frameMs: frame })" type="radio" name="frame" :value="frame" :disabled="!supportedFrames.includes(frame)"><span>{{ frame }} ms</span></label><p v-if="!frameAvailable" class="warning">当前已连接的接收端不支持所选帧时长；请先断开全部设备后再更改。</p></fieldset>
-      <fieldset><legend>外观</legend><label v-for="theme in themeOptions" :key="theme" class="choice"><input v-model="settings.theme" type="radio" name="theme" :value="theme"><span>{{ theme === 'light' ? '浅色' : theme === 'dark' ? '深色' : '跟随系统' }}</span></label></fieldset>
-      <fieldset><legend>已授权设备</legend>
-        <p class="field-hint">以下设备连接这台电脑时无需再次确认</p>
+      <div class="section-head"><div><h2>{{ t('header.settings') }}</h2><p>{{ t('settings.hint') }}</p></div></div>
+      <fieldset><legend>{{ t('settings.bitrate') }}</legend><label v-for="bitrate in [64000, 96000, 128000, 192000]" :key="bitrate" class="choice"><input v-model="settings.bitrate" @change="touch({ bitrate })" type="radio" name="bitrate" :value="bitrate"><span>{{ bitrate / 1000 }} kbps</span></label></fieldset>
+      <fieldset><legend>{{ t('settings.frame') }}</legend><label v-for="frame in [10, 20]" :key="frame" class="choice" :class="{ disabled: !supportedFrames.includes(frame) }"><input v-model="settings.frameMs" @change="touch({ frameMs: frame })" type="radio" name="frame" :value="frame" :disabled="!supportedFrames.includes(frame)"><span>{{ frame }} ms</span></label><p v-if="!frameAvailable" class="warning">{{ t('settings.frameWarning') }}</p></fieldset>
+      <fieldset><legend>{{ t('settings.appearance') }}</legend><label v-for="theme in themeOptions" :key="theme" class="choice"><input v-model="settings.theme" type="radio" name="theme" :value="theme"><span>{{ t('theme.' + theme) }}</span></label></fieldset>
+      <fieldset><legend>{{ t('settings.language') }}</legend><label v-for="lang in languageOptions" :key="lang" class="choice"><input type="radio" name="language" :value="lang" :checked="language === lang" @change="setLanguage(lang)"><span>{{ t('language.' + lang) }}</span></label></fieldset>
+      <fieldset><legend>{{ t('settings.authorized') }}</legend>
+        <p class="field-hint">{{ t('settings.authorizedHint') }}</p>
         <div v-if="authorizedDevices.length" class="authorized">
           <div v-for="device in authorizedDevices" :key="device.ID" class="authorized-row">
-            <div><strong>{{ device.Name || '未命名设备' }}</strong><span class="muted">{{ device.ID }}</span></div>
-            <button class="secondary danger" @click="removeAuthorized(device)">移除</button>
+            <div><strong>{{ device.Name || t('device.unnamed') }}</strong><span class="muted">{{ device.ID }}</span></div>
+            <button class="secondary danger" @click="removeAuthorized(device)">{{ t('device.remove') }}</button>
           </div>
         </div>
-        <p v-else class="field-hint">暂无已授权设备。当 Android 设备主动连接时，可以选择记住它。</p>
+        <p v-else class="field-hint">{{ t('settings.authorizedEmpty') }}</p>
       </fieldset>
-      <fieldset class="readonly"><legend>本机信息</legend>
-        <p>设备名称：{{ identity.name || '未命名' }}</p>
-        <p>设备标识：{{ identity.deviceId }}</p>
-        <p>编码器：Opus</p><p>采样率：48 kHz</p><p>声道：立体声</p>
+      <fieldset class="readonly"><legend>{{ t('settings.localInfo') }}</legend>
+        <p>{{ t('info.name', { value: identity.name || t('info.unnamed') }) }}</p>
+        <p>{{ t('info.id', { value: identity.deviceId }) }}</p>
+        <p>{{ t('info.codec') }}</p><p>{{ t('info.sampleRate') }}</p><p>{{ t('info.channels') }}</p>
       </fieldset>
     </section>
-    <footer>{{ connectedCount ? `已连接 ${connectedCount} 台 · ` : '' }}{{ settings.bitrate / 1000 }} kbps · {{ settings.frameMs }} ms · 48 kHz 立体声 Opus · UDP 局域网传输</footer>
+    <footer>{{ connectedCount ? t('footer.connectedPrefix', { n: connectedCount }) : '' }}{{ settings.bitrate / 1000 }} kbps · {{ settings.frameMs }} ms · {{ t('footer.tail') }}</footer>
 
     <div v-if="connRequests.length" class="modal-overlay">
       <div class="modal" role="dialog" aria-modal="true">
-        <h3>连接请求<span v-if="connRequests.length > 1" class="modal-count">（还有 {{ connRequests.length - 1 }} 个待处理）</span></h3>
+        <h3>{{ t('modal.title') }}<span v-if="connRequests.length > 1" class="modal-count">{{ t('modal.morePending', { n: connRequests.length - 1 }) }}</span></h3>
         <p class="modal-device">{{ connRequests[0].name }}</p>
-        <p class="muted">{{ connRequests[0].host }} 想要把这台电脑的音频推送到它上面播放。</p>
-        <label class="choice"><input v-model="rememberChoice" type="checkbox"><span>以后自动同意该设备</span></label>
+        <p class="muted">{{ connRequests[0].host }} {{ t('modal.desc') }}</p>
+        <label class="choice"><input v-model="rememberChoice" type="checkbox"><span>{{ t('modal.remember') }}</span></label>
         <div class="modal-actions">
-          <button class="secondary" @click="respondConnection(false)">拒绝</button>
-          <button @click="respondConnection(true)">允许</button>
+          <button class="secondary" @click="respondConnection(false)">{{ t('modal.deny') }}</button>
+          <button @click="respondConnection(true)">{{ t('modal.allow') }}</button>
         </div>
       </div>
     </div>
@@ -280,7 +299,7 @@ button[disabled] { opacity: 0.6; cursor: default; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .sync-note { margin-top: 14px; font-size: 13px; color: #086d4d; background: #eaf5f0; border: 1px solid #c8e5d8; padding: 8px 12px; }
 /* ---- 多设备同步校准动画 ---- */
-.sync-panel { border: 1px solid #c8e5d8; background: linear-gradient(180deg, #f2faf6, #eaf5f0); padding: 16px 18px; margin-bottom: 16px; overflow: hidden; }
+.sync-panel { border: 1px solid #c8e5d8; background: linear-gradient(180deg, #f2faf6, #eaf5f0); padding:  16px 18px; margin-bottom: 16px; overflow: hidden; }
 .sync-head { display: flex; align-items: center; gap: 14px; }
 .sync-title { flex: 1; min-width: 0; }
 .sync-title h3 { font-size: 16px; margin: 0 0 3px; color: #086d4d; }
