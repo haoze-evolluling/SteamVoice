@@ -105,6 +105,12 @@ func (s *Sender) SendSettings(settings protocol.Settings) error {
 	_, err := s.conn.Write(protocol.EncodeSettings(settings))
 	return err
 }
+func (s *Sender) SendNTPServer(server string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.conn.Write(protocol.EncodeNTPServer(server))
+	return err
+}
 
 // RequestConnection asks the receiver for permission to stream, retransmitting
 // the request until it answers or the timeout elapses. A cached answer that

@@ -6,6 +6,16 @@ import (
 )
 
 const SettingsControlSize = 40
+const NTPServerControlSize = 264
+
+func EncodeNTPServer(server string) []byte {
+	b := make([]byte, NTPServerControlSize)
+	copy(b, "SVNT")
+	b[4] = Version
+	b[5] = 1
+	copy(b[8:], server)
+	return b
+}
 
 type Settings struct {
 	BitrateKbps uint32
@@ -44,10 +54,10 @@ const SyncV2Size = 35
 
 // Receiver sync states reported in feedback, driving the calibration UI.
 const (
-	SyncUnknown    = 0 // legacy receiver or nothing reported yet
+	SyncUnknown     = 0 // legacy receiver or nothing reported yet
 	SyncCalibrating = 1 // receiving audio, clock offset still being measured
-	SyncAligned    = 2 // clock offset converged, playback ramping up
-	SyncPlaying    = 3 // synchronized playback running
+	SyncAligned     = 2 // clock offset converged, playback ramping up
+	SyncPlaying     = 3 // synchronized playback running
 )
 
 type ReceiverFeedback struct {

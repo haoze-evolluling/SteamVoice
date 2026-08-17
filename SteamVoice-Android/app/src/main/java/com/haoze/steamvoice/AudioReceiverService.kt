@@ -172,7 +172,7 @@ class AudioReceiverService : Service() {
             val next = CalibrationState(
                 pcName = pc.name,
                 phase = phase,
-                offsetMs = if (withStats) clockSync.medianOffsetMs() else null,
+                offsetMs = if (withStats) clockSync.relativeOffsetMs() else null,
                 rttMs = if (withStats) clockSync.lastRttMs() else null,
             )
             if (ConnectionBus.calibration.value != next) ConnectionBus.calibration.value = next
@@ -228,7 +228,7 @@ class AudioReceiverService : Service() {
                         }
                         ConnectionBus.notify(R.string.msg_connection_interrupted, gone?.name ?: LocaleManager.wrap(this).getString(R.string.generic_pc))
                     }
-                    if (activePc != null && System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate, currentSyncState(), clockSync.medianOffsetMs()?.toInt() ?: 0, clockSync.lastRttMs()?.toInt() ?: 0); lastFeedback = System.nanoTime() }
+                    if (activePc != null && System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate, currentSyncState(), clockSync.relativeOffsetMs()?.toInt() ?: 0, clockSync.lastRttMs()?.toInt() ?: 0); lastFeedback = System.nanoTime() }
                     publishCalibration()
                     continue
                 }
@@ -236,6 +236,14 @@ class AudioReceiverService : Service() {
                 if (control != null) {
                     val incoming = AudioSettings(control.bitrateKbps, control.frameMs, control.updatedAtMs, control.deviceId)
                     if (runBlocking { repository.applyIfNewer(incoming) }) settings = incoming
+                    continue
+                }
+                val ntpControl = NtpServerControl.decode(datagram.data, datagram.length)
+                if (ntpControl != null) {
+                    thread(name = "steamvoice-ntp") {
+                        NtpClient.queryOffsetMs(ntpControl.server)?.let { Log.i(TAG, "NTP server=${ntpControl.server} offsetMs=$it") }
+                            ?: Log.w(TAG, "NTP server unavailable: ${ntpControl.server}")
+                    }
                     continue
                 }
                 val conn = ConnControl.decode(datagram.data, datagram.length)
@@ -291,7 +299,7 @@ class AudioReceiverService : Service() {
                         }
                     }
                 }
-                if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate, currentSyncState(), clockSync.medianOffsetMs()?.toInt() ?: 0, clockSync.lastRttMs()?.toInt() ?: 0); lastFeedback = System.nanoTime() }
+                if (System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate, currentSyncState(), clockSync.relativeOffsetMs()?.toInt() ?: 0, clockSync.lastRttMs()?.toInt() ?: 0); lastFeedback = System.nanoTime() }
                 publishCalibration()
             }
         } catch (e: Exception) {

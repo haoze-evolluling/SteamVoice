@@ -20,6 +20,7 @@ import (
 	"steamvoice-desktop/internal/config"
 	"steamvoice-desktop/internal/discovery"
 	"steamvoice-desktop/internal/gateway"
+	"steamvoice-desktop/internal/ntp"
 	"steamvoice-desktop/internal/protocol"
 	"steamvoice-desktop/internal/stream"
 )
@@ -383,6 +384,9 @@ func (a *App) Connect(device Device) error {
 			log.Printf("settings sync failed: %v", err)
 		}
 	}
+	if err := sender.SendNTPServer(a.store.NTPServerName()); err != nil {
+		log.Printf("NTP server sync failed: %v", err)
+	}
 	a.mu.Lock()
 	if a.frameMs != 0 && a.frameMs != frameMs {
 		a.mu.Unlock()
@@ -390,16 +394,16 @@ func (a *App) Connect(device Device) error {
 		return svErr("err_frame_in_use", strconv.Itoa(a.frameMs))
 	}
 	if a.capture == nil {
+		a.clockAnchor = time.Now()
 		c, err := capture.Start(frameMs, a.onPCM)
 		if err != nil {
+			a.clockAnchor = time.Time{}
 			a.mu.Unlock()
 			_ = sender.Close()
 			return svErr("err_capture", err.Error())
 		}
 		a.capture = c
 		a.frameMs = frameMs
-		a.clockAnchor = time.Now()
-
 	}
 	previous := a.sessions[device.ID]
 	a.sessions[device.ID] = session
@@ -459,6 +463,29 @@ func (a *App) GetStatus() Status {
 // GetIdentity exposes the stable desktop identity used for authorization.
 func (a *App) GetIdentity() Identity {
 	return Identity{DeviceID: a.store.DeviceID, Name: a.pcName()}
+}
+
+type NTPStatus struct {
+	Server    string
+	OffsetMs  int64
+	Reachable bool
+}
+
+func (a *App) GetNTPSettings() NTPStatus { return NTPStatus{Server: a.store.NTPServerName()} }
+func (a *App) SaveNTPServer(server string) error {
+	server = strings.TrimSpace(server)
+	if server == "" {
+		server = ntp.DefaultServer
+	}
+	if len(server) > 253 || strings.ContainsAny(server, " \t\r\n") {
+		return svErr("err_ntp_server", "")
+	}
+	return a.store.SetNTPServer(server)
+}
+func (a *App) TestNTPServer() NTPStatus {
+	server := a.store.NTPServerName()
+	offset, err := ntp.Query(server, time.Second)
+	return NTPStatus{Server: server, OffsetMs: offset.Milliseconds(), Reachable: err == nil}
 }
 
 // ListAuthorizedDevices returns the remembered receivers that may connect

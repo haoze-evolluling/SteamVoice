@@ -11,6 +11,8 @@ export function DiscoverDevices():Promise<Array<main.Device>>;
 
 export function GetIdentity():Promise<main.Identity>;
 
+export function GetNTPSettings():Promise<main.NTPStatus>;
+
 export function GetStatus():Promise<main.Status>;
 
 export function ListAuthorizedDevices():Promise<Array<config.AuthorizedDevice>>;
@@ -20,3 +22,7 @@ export function RemoveAuthorizedDevice(arg1:string):Promise<void>;
 export function RespondConnection(arg1:string,arg2:boolean,arg3:boolean):Promise<void>;
 
 export function SaveLocalSettings(arg1:number,arg2:number):Promise<void>;
+
+export function SaveNTPServer(arg1:string):Promise<void>;
+
+export function TestNTPServer():Promise<main.NTPStatus>;

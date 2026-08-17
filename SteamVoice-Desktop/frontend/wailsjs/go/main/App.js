@@ -18,6 +18,10 @@ export function GetIdentity() {
   return window['go']['main']['App']['GetIdentity']();
 }
 
+export function GetNTPSettings() {
+  return window['go']['main']['App']['GetNTPSettings']();
+}
+
 export function GetStatus() {
   return window['go']['main']['App']['GetStatus']();
 }
@@ -36,4 +40,12 @@ export function RespondConnection(arg1, arg2, arg3) {
 
 export function SaveLocalSettings(arg1, arg2) {
   return window['go']['main']['App']['SaveLocalSettings'](arg1, arg2);
+}
+
+export function SaveNTPServer(arg1) {
+  return window['go']['main']['App']['SaveNTPServer'](arg1);
+}
+
+export function TestNTPServer() {
+  return window['go']['main']['App']['TestNTPServer']();
 }

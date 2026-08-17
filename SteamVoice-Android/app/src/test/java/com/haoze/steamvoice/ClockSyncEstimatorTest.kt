@@ -9,6 +9,14 @@ import org.junit.Test
 class ClockSyncEstimatorTest {
 
     @Test
+    fun relativeOffsetHidesMonotonicClockOrigin() {
+        val estimator = ClockSyncEstimator(nowNs = { 1_000_000L })
+        estimator.onExchange(0, 9_835_695_000_000L, 9_835_695_000_000L, 0)
+        estimator.onExchange(1_000_000, 9_835_696_000_000L, 9_835_696_000_000L, 1_000_000)
+        assertEquals(0L, estimator.relativeOffsetMs())
+    }
+
+    @Test
     fun zeroRttConstantOffsetMapsExactly() {
         val estimator = ClockSyncEstimator(nowNs = { 1_000_000L })
         // 对端时钟比本机快 500ms：本机 100 时发送，对端钟面读 600。

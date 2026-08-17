@@ -93,6 +93,22 @@ export namespace main {
 	        this.Name = source["Name"];
 	    }
 	}
+	export class NTPStatus {
+	    Server: string;
+	    OffsetMs: number;
+	    Reachable: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new NTPStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Server = source["Server"];
+	        this.OffsetMs = source["OffsetMs"];
+	        this.Reachable = source["Reachable"];
+	    }
+	}
 	export class Status {
 	    ConnectedCount: number;
 	    Message: string;

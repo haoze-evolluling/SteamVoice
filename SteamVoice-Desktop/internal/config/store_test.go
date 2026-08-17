@@ -63,3 +63,18 @@ func TestAuthorizePersistsAcrossLoad(t *testing.T) {
 		t.Fatal("authorization lost after reload")
 	}
 }
+
+func TestNTPServerDefaultsAndPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "desktop.json")
+	f, err := Load(path)
+	if err != nil || f.NTPServerName() != "ntp.aliyun.com" {
+		t.Fatalf("default=%q err=%v", f.NTPServerName(), err)
+	}
+	if err := f.SetNTPServer("time.example"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Load(path)
+	if err != nil || reloaded.NTPServerName() != "time.example" {
+		t.Fatalf("server=%q err=%v", reloaded.NTPServerName(), err)
+	}
+}

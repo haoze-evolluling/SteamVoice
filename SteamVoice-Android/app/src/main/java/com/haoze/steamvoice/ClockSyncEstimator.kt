@@ -13,6 +13,7 @@ class ClockSyncEstimator(
     private class Sample(val offset: Long, val rttNs: Long, val atNs: Long)
 
     private val samples = ArrayDeque<Sample>()
+    private var referenceOffset: Long? = null
 
     /**
      * 记录一次往返：t1 本机发送、t2 对端接收、t3 对端回复、t4 本机收到回复。
@@ -24,6 +25,7 @@ class ClockSyncEstimator(
         val offset = ((t2 - t1) + (t3 - t4)) / 2
         val now = nowNs()
         synchronized(samples) {
+            if (referenceOffset == null) referenceOffset = offset
             samples.addLast(Sample(offset, rtt, now))
             while (samples.size > windowSize) samples.removeFirst()
         }
@@ -53,6 +55,14 @@ class ClockSyncEstimator(
         samples.map { it.offset }.sorted().let { it[it.size / 2] } / 1_000_000
     }
 
+    /** Raw offset includes each device's monotonic-clock origin; expose only convergence residual. */
+    fun relativeOffsetMs(): Long? = synchronized(samples) {
+        pruneLocked()
+        val reference = referenceOffset ?: return null
+        if (samples.isEmpty()) return null
+        (samples.map { it.offset }.sorted().let { it[it.size / 2] } - reference) / 1_000_000
+    }
+
     /** 最近一次往返耗时（毫秒）；无样本时返回 null。 */
     fun lastRttMs(): Long? = synchronized(samples) {
         pruneLocked()
@@ -64,6 +74,7 @@ class ClockSyncEstimator(
         while (samples.isNotEmpty() && now - samples.first().atNs > maxSampleAgeNs) {
             samples.removeFirst()
         }
+        if (samples.isEmpty()) referenceOffset = null
     }
 
     private companion object {

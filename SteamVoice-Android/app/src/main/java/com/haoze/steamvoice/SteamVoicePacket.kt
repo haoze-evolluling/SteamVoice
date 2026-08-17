@@ -74,6 +74,17 @@ data class SettingsControl(val bitrateKbps: Int, val frameMs: Int, val updatedAt
     }
 }
 
+data class NtpServerControl(val server: String) {
+    companion object {
+        private const val SIZE = 264
+        fun decode(data: ByteArray, length: Int): NtpServerControl? {
+            if (length != SIZE || data.copyOfRange(0, 4).decodeToString() != "SVNT" || data[4].toInt() != SteamVoiceProtocol.version || data[5].toInt() != 1) return null
+            val server = data.copyOfRange(8, SIZE).decodeToString().trimEnd('\u0000').trim()
+            return NtpServerControl(if (server.isEmpty()) NtpClient.DEFAULT_SERVER else server)
+        }
+    }
+}
+
 /** NTP 风格的时钟同步报文（SVTS）。t4 由请求方本地记录，不经网络传输。 */
 data class TimeSyncControl(val kind: Int, val t1: Long, val t2: Long, val t3: Long) {
     fun encode(): ByteArray {

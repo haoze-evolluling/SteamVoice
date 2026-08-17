@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { Connect, DiscoverDevices, Disconnect, GetStatus, GetIdentity, ListAuthorizedDevices, RemoveAuthorizedDevice, RespondConnection, SaveLocalSettings } from '../wailsjs/go/main/App';
+import { Connect, DiscoverDevices, Disconnect, GetStatus, GetIdentity, GetNTPSettings, ListAuthorizedDevices, RemoveAuthorizedDevice, RespondConnection, SaveLocalSettings, SaveNTPServer, TestNTPServer } from '../wailsjs/go/main/App';
 import { EventsOn, WindowSetDarkTheme, WindowSetLightTheme, WindowSetSystemDefaultTheme } from '../wailsjs/runtime/runtime';
 import { STREAMING_CODE, language, locale, setLanguage, t, translateBackend, type LanguagePref, type ParamValue } from './i18n';
 
@@ -46,6 +46,8 @@ const identity = ref<{ deviceId: string; name: string }>({ deviceId: '', name: '
 const authorizedDevices = ref<AuthorizedDevice[]>([]);
 const connecting = ref<Record<string, boolean>>({});
 const calibration = ref<Record<string, Calibration>>({});
+const ntpServer = ref('ntp.aliyun.com');
+const ntpResult = ref<string>('');
 const syncFlash = ref(false);
 let syncFlashTimer: number | undefined;
 const connectedCount = computed(() => Object.keys(connected.value).length);
@@ -132,6 +134,15 @@ async function respondConnection(allow: boolean) {
 async function removeAuthorized(device: AuthorizedDevice) {
   try { await RemoveAuthorizedDevice(device.ID); await refreshAuthorized(); } catch { setStatus('status.removeFailed'); }
 }
+async function saveNtp() {
+  try { await SaveNTPServer(ntpServer.value.trim() || 'ntp.aliyun.com'); ntpServer.value = ntpServer.value.trim() || 'ntp.aliyun.com'; ntpResult.value = t('settings.ntpSaved'); }
+  catch { ntpResult.value = t('settings.ntpInvalid'); }
+}
+async function testNtp() {
+  await saveNtp();
+  try { const value: any = await TestNTPServer(); const reachable = Boolean(value?.reachable ?? value?.Reachable); ntpResult.value = reachable ? t('settings.ntpOffset', { offset: Math.abs(Number(value?.offsetMs ?? value?.OffsetMs) || 0) }) : t('settings.ntpUnavailable'); }
+  catch { ntpResult.value = t('settings.ntpUnavailable'); }
+}
 async function connect(device: Device) {
   if (connected.value[device.id] || connecting.value[device.id]) return;
   if (!device.supportedFrameMs.includes(settings.value.frameMs)) { setStatus('status.frameUnsupported', { frame: settings.value.frameMs }); return; }
@@ -147,7 +158,7 @@ async function disconnect(device: Device) {
   try { await Disconnect(device.id); delete connected.value[device.id]; } catch { setStatus('status.disconnectFailed'); }
 }
 watch(settings, (next) => { localStorage.setItem(settingsKey, JSON.stringify(next)); applyTheme(next.theme); SaveLocalSettings(next.bitrate, next.frameMs).catch(() => {}); }, { deep: true });
-watch(page, (next) => { if (next === 'settings') { refreshAuthorized(); GetIdentity().then((value: any) => { identity.value = { deviceId: String(value?.deviceId ?? value?.DeviceID ?? ''), name: String(value?.name ?? value?.Name ?? '') }; }).catch(() => {}); } });
+watch(page, (next) => { if (next === 'settings') { refreshAuthorized(); GetNTPSettings().then((value: any) => { ntpServer.value = String(value?.server ?? value?.Server ?? 'ntp.aliyun.com'); }).catch(() => {}); GetIdentity().then((value: any) => { identity.value = { deviceId: String(value?.deviceId ?? value?.DeviceID ?? ''), name: String(value?.name ?? value?.Name ?? '') }; }).catch(() => {}); } });
 watch(locale, () => { document.documentElement.lang = locale.value === 'zh' ? 'zh-CN' : 'en'; }, { immediate: true });
 onMounted(async () => {
   try { settings.value = normalizeSettings(JSON.parse(localStorage.getItem(settingsKey) ?? 'null')); } catch { settings.value = { ...defaults }; }
@@ -241,6 +252,7 @@ onUnmounted(() => { window.clearInterval(tickTimer); window.clearTimeout(syncFla
       <div class="section-head"><div><h2>{{ t('header.settings') }}</h2><p>{{ t('settings.hint') }}</p></div></div>
       <fieldset><legend>{{ t('settings.bitrate') }}</legend><label v-for="bitrate in [64000, 96000, 128000, 192000]" :key="bitrate" class="choice"><input v-model="settings.bitrate" @change="touch({ bitrate })" type="radio" name="bitrate" :value="bitrate"><span>{{ bitrate / 1000 }} kbps</span></label></fieldset>
       <fieldset><legend>{{ t('settings.frame') }}</legend><label v-for="frame in [10, 20]" :key="frame" class="choice" :class="{ disabled: !supportedFrames.includes(frame) }"><input v-model="settings.frameMs" @change="touch({ frameMs: frame })" type="radio" name="frame" :value="frame" :disabled="!supportedFrames.includes(frame)"><span>{{ frame }} ms</span></label><p v-if="!frameAvailable" class="warning">{{ t('settings.frameWarning') }}</p></fieldset>
+      <fieldset><legend>{{ t('settings.ntp') }}</legend><p class="field-hint">{{ t('settings.ntpHint') }}</p><input v-model="ntpServer" class="text-input" type="text" inputmode="url" autocomplete="off" @change="saveNtp"><div class="ntp-actions"><button class="secondary" @click="ntpServer = 'ntp.aliyun.com'; saveNtp()">{{ t('settings.ntpDefault') }}</button><button @click="testNtp">{{ t('settings.ntpTest') }}</button></div><p v-if="ntpResult" class="field-hint">{{ ntpResult }}</p></fieldset>
       <fieldset><legend>{{ t('settings.appearance') }}</legend><label v-for="theme in themeOptions" :key="theme" class="choice"><input v-model="settings.theme" type="radio" name="theme" :value="theme"><span>{{ t('theme.' + theme) }}</span></label></fieldset>
       <fieldset><legend>{{ t('settings.language') }}</legend><label v-for="lang in languageOptions" :key="lang" class="choice"><input type="radio" name="language" :value="lang" :checked="language === lang" @change="setLanguage(lang)"><span>{{ t('language.' + lang) }}</span></label></fieldset>
       <fieldset><legend>{{ t('settings.authorized') }}</legend>
@@ -344,11 +356,13 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 @media (prefers-reduced-motion: reduce) { .wave i, .link-line .pulse, .mini-steps i.active, .calib-steps li.active, .sync-panel.done .node-chip.phase-3 { animation: none; } }
 .field-hint { font-size: 13px; margin-bottom: 8px; } .muted { color: #687077; font-size: 12px; }
+.text-input { box-sizing: border-box; width: min(420px, 100%); padding: 9px 10px; border: 1px solid #b8c0c6; background: #fff; color: #172033; font: inherit; } .ntp-actions { display: flex; gap: 8px; margin-top: 10px; }
 .authorized { display: flex; flex-direction: column; gap: 6px; } .authorized-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #d9dde1; background: #fff; } .authorized-row .muted { display: block; } .authorized-row div { min-width: 0; } .danger { color: #a24a18; }
 .modal-overlay { position: fixed; inset: 0; background: rgba(23, 32, 51, 0.45); display: grid; place-items: center; z-index: 40; }
 .modal { background: #fff; color: #172033; border-radius: 10px; padding: 24px; width: min(420px, calc(100vw - 48px)); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.25); }
 .modal h3 { margin: 0 0 8px; } .modal-count { font-size: 13px; font-weight: 400; color: #687077; } .modal-device { font-size: 17px; font-weight: 700; margin: 0 0 4px; } .modal .muted { font-size: 13px; margin-bottom: 14px; } .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 :root[data-theme='dark'] .authorized-row { border-color: #3d4a51; background: #202b31; } :root[data-theme='dark'] .modal { background: #202b31; color: #e8edf0; } :root[data-theme='dark'] .modal .muted { color: #b6c1c7; }
+:root[data-theme='dark'] .text-input { background: #202b31; color: #e8edf0; border-color: #3d4a51; }
 :root[data-theme='dark'] .sync-note { color: #4fc08d; background: #1c2f28; border-color: #2b4a3c; } :root[data-theme='dark'] .spinner { border-color: #3d4a51; border-top-color: #4fc08d; }
 :root[data-theme='dark'] .sync-panel { border-color: #2b4a3c; background: linear-gradient(180deg, #1d2b26, #1a2622); }
 :root[data-theme='dark'] .sync-title h3 { color: #4fc08d; }
@@ -368,6 +382,7 @@ button[disabled] { opacity: 0.6; cursor: default; }
 :root[data-theme='dark'] .calib-steps li.active { background: #086d4d; color: #eafff5; }
 @media (prefers-color-scheme: dark) {
   :root[data-theme='system'] .authorized-row { border-color: #3d4a51; background: #202b31; }
+  :root[data-theme='system'] .text-input { background: #202b31; color: #e8edf0; border-color: #3d4a51; }
   :root[data-theme='system'] .modal { background: #202b31; color: #e8edf0; }
   :root[data-theme='system'] .modal .muted { color: #b6c1c7; }
   :root[data-theme='system'] .sync-note { color: #4fc08d; background: #1c2f28; border-color: #2b4a3c; }

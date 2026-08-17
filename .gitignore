@@ -9,7 +9,7 @@ Desktop.ini
 .vscode/
 
 # Local agent/tool metadata
-.trae/
+问题.md
 
 # Local environment files
 .env

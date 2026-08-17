@@ -14,7 +14,7 @@ While sessions exist the sender pads silent WASAPI idle periods with DTX-encoded
 
 Magic (4), version (1), type=1 (1), reserved (2), session (4), highest sequence (4), received count (4), lost count (4), queue excess (2), current bitrate (4), then the calibration block appended in v4.2: sync state (1, 0 unknown / 1 calibrating clock / 2 aligned / 3 synchronized playback), median clock offset ms (2, signed), exchange RTT ms (2). The first 30 bytes are unchanged from the previous layout, so older senders keep working; the sync state drives both apps' calibration UI (检测 → 计算 → 同步 → 完成).
 
-Feedback is sent roughly every 200 ms while a session is active. The queue value reports backlog beyond the receiver's sync budget, not total buffering, so the sender's 48–192 kbps adaptation does not misread steady-state buffering as congestion.
+Feedback is sent roughly every 200 ms while a session is active. Its visible offset is the residual relative to the first accepted `SVTS` sample: raw monotonic-clock offsets can include device uptime and are used only for timestamp mapping. The queue value reports backlog beyond the receiver's sync budget, not total buffering, so the sender's 48–192 kbps adaptation does not misread steady-state buffering as congestion.
 
 ## Time sync (magic `SVTS`, 40 bytes)
 

@@ -27,6 +27,22 @@ type File struct {
 	DeviceID   string             `json:"deviceId"`
 	DeviceName string             `json:"deviceName"`
 	Authorized []AuthorizedDevice `json:"authorized"`
+	NTPServer  string             `json:"ntpServer,omitempty"`
+}
+
+func (f *File) NTPServerName() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.NTPServer == "" {
+		return "ntp.aliyun.com"
+	}
+	return f.NTPServer
+}
+func (f *File) SetNTPServer(server string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.NTPServer = server
+	return f.save()
 }
 
 // Load reads (or creates) the config file at path. The identity is generated

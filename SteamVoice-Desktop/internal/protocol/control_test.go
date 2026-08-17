@@ -38,3 +38,10 @@ func TestDecodeFeedbackRejectsBadLength(t *testing.T) {
 		t.Fatal("expected invalid feedback of length 31 to be rejected")
 	}
 }
+
+func TestEncodeNTPServer(t *testing.T) {
+	b := EncodeNTPServer("ntp.aliyun.com")
+	if len(b) != NTPServerControlSize || string(b[:4]) != "SVNT" || string(b[8:22]) != "ntp.aliyun.com" {
+		t.Fatalf("invalid NTP control: %q", b)
+	}
+}
