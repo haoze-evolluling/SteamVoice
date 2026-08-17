@@ -26,7 +26,10 @@ class SettingsRepository(private val context: Context) {
     val settings: Flow<AudioSettings> = context.settingsDataStore.data.map { prefs: Preferences ->
         val bitrate = (prefs[Keys.bitrate] ?: 128).takeIf { it in VALID_BITRATES } ?: 128
         val frame = (prefs[Keys.frameMs] ?: 10).takeIf { it == 10 || it == 20 } ?: 10
-        AudioSettings(bitrate, frame, prefs[Keys.updatedAtMs] ?: 0L, prefs[Keys.deviceId] ?: defaultDeviceId(context))
+        // The device identity must never be accepted from a peer's settings
+        // packet. Older releases persisted that field from the desktop and
+        // caused every receiver connected to one PC to advertise the same ID.
+        AudioSettings(bitrate, frame, prefs[Keys.updatedAtMs] ?: 0L, defaultDeviceId(context))
     }
 
     suspend fun setInitialBitrate(kbps: Int) = update(kbps, settingsSnapshot().frameMs)
@@ -34,14 +37,14 @@ class SettingsRepository(private val context: Context) {
     suspend fun applyIfNewer(incoming: AudioSettings): Boolean {
         val current = settingsSnapshot()
         if (compareVersion(incoming, current) <= 0) return false
-        update(incoming.initialBitrateKbps, incoming.frameMs, incoming.updatedAtMs, incoming.deviceId)
+        update(incoming.initialBitrateKbps, incoming.frameMs, incoming.updatedAtMs)
         return true
     }
     private suspend fun settingsSnapshot() = settings.first()
-    private suspend fun update(kbps: Int, frameMs: Int, timestamp: Long = System.currentTimeMillis(), id: String = defaultDeviceId(context)) {
+    private suspend fun update(kbps: Int, frameMs: Int, timestamp: Long = System.currentTimeMillis()) {
         require(kbps in VALID_BITRATES)
         require(frameMs == 10 || frameMs == 20)
-        context.settingsDataStore.edit { it[Keys.bitrate] = kbps; it[Keys.frameMs] = frameMs; it[Keys.updatedAtMs] = timestamp; it[Keys.deviceId] = id }
+        context.settingsDataStore.edit { it[Keys.bitrate] = kbps; it[Keys.frameMs] = frameMs; it[Keys.updatedAtMs] = timestamp; it[Keys.deviceId] = defaultDeviceId(context) }
     }
 }
 

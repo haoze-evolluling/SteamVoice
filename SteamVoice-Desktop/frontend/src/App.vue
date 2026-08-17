@@ -138,7 +138,7 @@ async function connect(device: Device) {
   connecting.value[device.id] = true;
   setStatus('status.waitingConfirm', { name: device.name });
   try {
-    await Connect({ Name: device.name, Host: device.host, Port: device.port, ID: device.id, Codec: device.codec, SampleRate: device.sampleRate, Channels: device.channels, Bitrate: settings.value.bitrate, FrameMs: settings.value.frameMs, SupportedFrameMs: device.supportedFrameMs, UpdatedAtMs: settings.value.updatedAtMs, SettingsDeviceID: settings.value.deviceId } as any);
+    await Connect({ Name: device.name, Host: device.host, Port: device.port, ID: device.id, Codec: device.codec, SampleRate: device.sampleRate, Channels: device.channels, Bitrate: settings.value.bitrate, FrameMs: settings.value.frameMs, SupportedFrameMs: device.supportedFrameMs, UpdatedAtMs: settings.value.updatedAtMs, SettingsDeviceID: device.settingsDeviceId } as any);
     setStatus('');
   } catch (error) { setErrorStatus('status.connectFailed', error); }
   connecting.value[device.id] = false;

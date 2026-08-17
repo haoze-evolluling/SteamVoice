@@ -9,7 +9,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
 data class ActivePc(
     val deviceId: String,
     val name: String,
-    val address: InetAddress,
+    // mDNS can resolve a different local address than the socket selected by
+    // the desktop. Bind this to the first authenticated audio packet.
+    var address: InetAddress,
     var port: Int = 0,
 )
 

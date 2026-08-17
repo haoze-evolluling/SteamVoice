@@ -187,7 +187,12 @@ func parseEntry(e *zeroconf.ServiceEntry) (Device, bool) {
 	// Prefer the receiver's stable identity over the mDNS instance
 	// name, which gets conflict suffixes like "(2)" and would fork
 	// sessions for the same physical device.
-	id := values["settings_device_id"]
+	// device_id is the receiver identity. settings_device_id is metadata for
+	// audio-settings conflict resolution and must not become the discovery key.
+	id := values["device_id"]
+	if id == "" {
+		id = values["settings_device_id"]
+	}
 	if id == "" {
 		id = e.Instance
 	}

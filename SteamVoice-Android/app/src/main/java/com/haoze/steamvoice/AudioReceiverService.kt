@@ -249,10 +249,16 @@ class AudioReceiverService : Service() {
                 }
                 received++
                 // 音频门控：只播放已授权发送方的数据。
-                val authorized = activePc != null && datagram.address == activePc!!.address
+                // For a phone-initiated session the peer was discovered via
+                // mDNS, but the desktop may send from another interface. The
+                // control handshake already authorized this peer; bind the
+                // actual source address on its first audio packet.
+                val authorized = activePc != null &&
+                    (datagram.address == activePc!!.address || activePc!!.port == 0)
                 if (!authorized) { unauthorizedDrops++; if (unauthorizedDrops % 100 == 1L) Log.w(TAG, "dropping audio from unauthorized ${datagram.address} (total=$unauthorizedDrops)"); continue }
                 val packet = SteamVoiceProtocol.decode(datagram.data, datagram.length)
                 if (packet == null) { Log.w(TAG, "invalid UDP packet length=${datagram.length}"); continue }
+                if (activePc!!.port == 0) activePc!!.address = datagram.address
                 lastAddress = datagram.address; lastPort = datagram.port
                 lastAudioNs = System.nanoTime()
                 if (activePc!!.port == 0) activePc!!.port = datagram.port
