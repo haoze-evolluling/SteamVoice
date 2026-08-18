@@ -583,7 +583,12 @@ private fun AndroidDeviceCard(device: AndroidDevice, state: PeerCalibrationState
                     PeerCalibrationPhase.IDLE -> Text(stringResource(R.string.android_sync_ready), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     PeerCalibrationPhase.REQUESTING, PeerCalibrationPhase.AWAITING_CONFIRMATION, PeerCalibrationPhase.MEASURING, PeerCalibrationPhase.WAITING_TARGET -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) { CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp); Text(stringResource(R.string.android_sync_running), style = MaterialTheme.typography.labelMedium) }
                     PeerCalibrationPhase.FAILED -> Text(stringResource(R.string.android_sync_failed), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
-                    PeerCalibrationPhase.COMPLETE -> Text(stringResource(R.string.android_sync_result, state.offsetMs ?: 0L, state.rttMs ?: 0L), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    PeerCalibrationPhase.COMPLETE -> Text(
+                        if (state.rttMs != null) stringResource(R.string.android_sync_result, state.rttMs)
+                        else stringResource(R.string.android_sync_complete),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                 }
             }
             if (state.phase == PeerCalibrationPhase.IDLE || state.phase == PeerCalibrationPhase.COMPLETE || state.phase == PeerCalibrationPhase.FAILED) Button(onClick = onSync, enabled = canStart) { Text(stringResource(R.string.android_sync_action)) }

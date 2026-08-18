@@ -12,7 +12,7 @@
     <string name="android_sync_ready">可进行时间校正</string>
     <string name="android_sync_running">正在校正时钟…</string>
     <string name="android_sync_failed">校正失败，请检查网络</string>
-    <string name="android_sync_result">偏差 %1$d ms · 往返 %2$d ms</string>
+    <string name="android_sync_result">播放已对齐 · 往返 %1$d ms</string>
     <string name="android_sync_complete">两台设备已重新同步</string>
     <string name="android_sync_action">校正时间</string>
     <string name="android_sync_confirm_title">附近设备请求校时</string>

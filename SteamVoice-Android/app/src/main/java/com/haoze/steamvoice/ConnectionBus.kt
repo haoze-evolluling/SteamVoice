@@ -44,6 +44,7 @@ enum class PeerCalibrationPhase { IDLE, REQUESTING, AWAITING_CONFIRMATION, MEASU
 
 data class PeerCalibrationState(
     val phase: PeerCalibrationPhase = PeerCalibrationPhase.IDLE,
+    /** 调度用单调时钟原点差；不要把它当作用户可读的播放延迟。 */
     val offsetMs: Long? = null,
     val rttMs: Long? = null,
 )

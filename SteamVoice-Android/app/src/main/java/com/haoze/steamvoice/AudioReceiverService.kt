@@ -322,7 +322,9 @@ class AudioReceiverService : Service() {
                     if (peerResetRequested) {
                         buffer.clear(); player.resetForSession(); expectedNextTsNs = 0L
                         peerResetRequested = false
-                        publishPeer(peerDeviceId, PeerCalibrationState(PeerCalibrationPhase.COMPLETE, peerOffsetMs, peerRttMs))
+                        // peerOffsetMs is a boot-relative clock-origin conversion value;
+                        // keep it internal and never expose it as a playback deviation.
+                        publishPeer(peerDeviceId, PeerCalibrationState(PeerCalibrationPhase.COMPLETE, null, peerRttMs))
                         val pc = activePc
                         val address = lastPeerAddress
                         if (pc != null && address != null && lastPeerPort != 0) {
@@ -351,7 +353,7 @@ class AudioReceiverService : Service() {
                     // discard locally queued audio at the peer-agreed boundary.
                     buffer.clear(); player.resetForSession(); expectedNextTsNs = 0L
                     peerResetRequested = false
-                    publishPeer(peerDeviceId, PeerCalibrationState(PeerCalibrationPhase.COMPLETE, peerOffsetMs, peerRttMs))
+                    publishPeer(peerDeviceId, PeerCalibrationState(PeerCalibrationPhase.COMPLETE, null, peerRttMs))
                     val pc = activePc
                     if (pc != null) {
                         val done = PeerCalibrationControl(PeerCalibrationControl.COMPLETE, peerOperation, selfIdBlocking(), pc.deviceId, peerTargetLocalNs, (peerOffsetMs ?: 0L) * 1_000_000L, peerRttMs ?: 0L).encode()
