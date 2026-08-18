@@ -13,7 +13,10 @@
     <string name="android_sync_running">Calibrating clock…</string>
     <string name="android_sync_failed">Calibration failed; check the network</string>
     <string name="android_sync_result">Offset %1$d ms · RTT %2$d ms</string>
+    <string name="android_sync_complete">Both devices are synchronized</string>
     <string name="android_sync_action">Calibrate time</string>
+    <string name="android_sync_confirm_title">Nearby device requests calibration</string>
+    <string name="android_sync_confirm">Device %1$s requests clock calibration and playback buffer reset</string>
     <plurals name="device_count">
         <item quantity="one">%1$d PC</item>
         <item quantity="other">%1$d PCs</item>

@@ -7,7 +7,7 @@ datagram; packets are never concatenated or fragmented by the application.
 ## Endpoints and identity
 
 * Android audio endpoint: UDP `40125` (`SV01`, feedback, settings, time sync,
-  heartbeat and connection control).
+  heartbeat, connection control and Android peer calibration control).
 * Desktop control endpoint: UDP `40126` (`SVCR` requests, responses and bye).
 * mDNS `_steamvoice._udp.local.` advertises the endpoint port and a stable
   `device_id`. The advertised role is `pc` or `speaker`; the role is not an
@@ -52,3 +52,13 @@ from another device, another session, or an already-consumed sequence. Unknown
 magic, version, kind, malformed lengths, and unsupported formats are dropped
 without changing connection state. New message kinds must use a new magic or
 an explicitly versioned layout; existing fields are not overloaded.
+
+## Android peer calibration
+
+`SVAC` datagrams are exchanged directly between two Android receivers on UDP
+`40125`; the desktop never receives or relays them. The requester must first
+receive explicit peer confirmation, then performs `SVTS` probes and sends each
+device a reset target expressed in that device's monotonic clock. At the target
+each receiver clears only its local audio/jitter queue, preserving the desktop
+session and its existing clock mapping. Operations are rejected when the two
+receivers are attached to different PCs or the peer has not confirmed them.

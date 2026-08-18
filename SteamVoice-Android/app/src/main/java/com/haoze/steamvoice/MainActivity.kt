@@ -101,13 +101,6 @@ import kotlin.math.sin
 
 /** 电脑在设备列表中的连接状态。 */
 enum class PcConnectionState { ONLINE, CONNECTING, CONNECTED }
-sealed interface AndroidSyncState {
-    data object Idle : AndroidSyncState
-    data object Syncing : AndroidSyncState
-    data class Complete(val result: AndroidClockSyncResult) : AndroidSyncState
-    data object Failed : AndroidSyncState
-}
-
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { startReceiver() }
     private val discovery by lazy { PcDiscovery(this) }
@@ -205,9 +198,10 @@ private fun ReceiverScreen(
     val androidDevices by discovery.androidDevices.collectAsState()
     val activePc by ConnectionBus.activePc.collectAsState()
     val authPrompt by ConnectionBus.authPrompt.collectAsState()
+    val peerPrompt by ConnectionBus.peerCalibrationPrompts.collectAsState()
     val calibration by ConnectionBus.calibration.collectAsState()
     val pcStates = remember { mutableStateMapOf<String, PcConnectionState>() }
-    val androidSyncStates = remember { mutableStateMapOf<String, AndroidSyncState>() }
+    val peerCalibration by ConnectionBus.peerCalibration.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -246,7 +240,8 @@ private fun ReceiverScreen(
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            Column(Modifier.fillMaxSize()) {
             val calib = calibration
             AnimatedVisibility(
                 visible = calib != null,
@@ -317,20 +312,13 @@ private fun ReceiverScreen(
                             )
                         }
                         items(visibleAndroidDevices, key = { it.deviceId }) { device ->
-                            AndroidDeviceCard(
-                                device = device,
-                                state = androidSyncStates[device.deviceId] ?: AndroidSyncState.Idle,
-                                onSync = {
-                                    androidSyncStates[device.deviceId] = AndroidSyncState.Syncing
-                                    scope.launch {
-                                        val result = withContext(Dispatchers.IO) { runCatching { AndroidClockSync.query(device) }.getOrNull() }
-                                        androidSyncStates[device.deviceId] = if (result == null) AndroidSyncState.Failed else AndroidSyncState.Complete(result)
-                                    }
-                                },
-                            )
+                            AndroidDeviceCard(device, peerCalibration[device.deviceId] ?: PeerCalibrationState(), activePc != null) {
+                                ConnectionBus.peerCalibrationRequests.add(device)
+                            }
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -341,6 +329,15 @@ private fun ReceiverScreen(
             onRespond = { allow, remember ->
                 ConnectionBus.decisions.add(Triple(prompt.requestId, allow, remember))
             },
+        )
+    }
+    peerPrompt?.let { prompt ->
+        AlertDialog(
+            onDismissRequest = { ConnectionBus.peerCalibrationDecisions.add(prompt.operation to false) },
+            title = { Text(stringResource(R.string.android_sync_confirm_title)) },
+            text = { Text(stringResource(R.string.android_sync_confirm, prompt.deviceId.take(8))) },
+            confirmButton = { TextButton(onClick = { ConnectionBus.peerCalibrationDecisions.add(prompt.operation to true) }) { Text(stringResource(R.string.auth_allow)) } },
+            dismissButton = { TextButton(onClick = { ConnectionBus.peerCalibrationDecisions.add(prompt.operation to false) }) { Text(stringResource(R.string.auth_deny)) } },
         )
     }
 }
@@ -568,10 +565,10 @@ private fun PcCard(pc: PcDevice, state: PcConnectionState, onConnect: () -> Unit
 }
 
 @Composable
-private fun AndroidDeviceCard(device: AndroidDevice, state: AndroidSyncState, onSync: () -> Unit) {
+private fun AndroidDeviceCard(device: AndroidDevice, state: PeerCalibrationState, canStart: Boolean, onSync: () -> Unit) {
     Surface(
         shape = MaterialTheme.shapes.large,
-        color = if (state is AndroidSyncState.Complete) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        color = if (state.phase == PeerCalibrationPhase.COMPLETE) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
     ) {
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -582,14 +579,14 @@ private fun AndroidDeviceCard(device: AndroidDevice, state: AndroidSyncState, on
             Column(Modifier.weight(1f)) {
                 Text(device.name, style = MaterialTheme.typography.titleMedium)
                 Text(device.host, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                when (state) {
-                    AndroidSyncState.Idle -> Text(stringResource(R.string.android_sync_ready), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    AndroidSyncState.Syncing -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) { CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp); Text(stringResource(R.string.android_sync_running), style = MaterialTheme.typography.labelMedium) }
-                    AndroidSyncState.Failed -> Text(stringResource(R.string.android_sync_failed), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
-                    is AndroidSyncState.Complete -> Text(stringResource(R.string.android_sync_result, state.result.offsetMs, state.result.rttMs), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                when (state.phase) {
+                    PeerCalibrationPhase.IDLE -> Text(stringResource(R.string.android_sync_ready), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    PeerCalibrationPhase.REQUESTING, PeerCalibrationPhase.AWAITING_CONFIRMATION, PeerCalibrationPhase.MEASURING, PeerCalibrationPhase.WAITING_TARGET -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) { CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp); Text(stringResource(R.string.android_sync_running), style = MaterialTheme.typography.labelMedium) }
+                    PeerCalibrationPhase.FAILED -> Text(stringResource(R.string.android_sync_failed), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+                    PeerCalibrationPhase.COMPLETE -> Text(stringResource(R.string.android_sync_result, state.offsetMs ?: 0L, state.rttMs ?: 0L), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 }
             }
-            if (state !is AndroidSyncState.Syncing) Button(onClick = onSync) { Text(stringResource(R.string.android_sync_action)) }
+            if (state.phase == PeerCalibrationPhase.IDLE || state.phase == PeerCalibrationPhase.COMPLETE || state.phase == PeerCalibrationPhase.FAILED) Button(onClick = onSync, enabled = canStart) { Text(stringResource(R.string.android_sync_action)) }
         }
     }
 }

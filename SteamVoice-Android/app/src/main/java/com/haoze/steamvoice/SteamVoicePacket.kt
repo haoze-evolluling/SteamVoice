@@ -100,6 +100,49 @@ data class TimeSyncControl(val kind: Int, val t1: Long, val t2: Long, val t3: Lo
     }
 }
 
+/** Android-to-Android playback calibration control. It deliberately has its
+ * own magic so desktop senders never need to understand or relay it. */
+data class PeerCalibrationControl(
+    val kind: Int,
+    val operation: Long,
+    val deviceId: String,
+    val pcId: String,
+    val targetNs: Long = 0L,
+    val offsetNs: Long = 0L,
+    val rttMs: Long = 0L,
+) {
+    fun encode(): ByteArray {
+        val device = deviceId.toByteArray(Charsets.UTF_8)
+        val pc = pcId.toByteArray(Charsets.UTF_8)
+        require(device.size in 1..MAX_ID_BYTES && pc.size in 1..MAX_ID_BYTES)
+        return ByteBuffer.allocate(HEADER_SIZE + device.size + pc.size).order(ByteOrder.BIG_ENDIAN).apply {
+            put(MAGIC.toByteArray()).put(SteamVoiceProtocol.version.toByte()).put(kind.toByte()).putShort(0)
+            putLong(operation).putLong(targetNs).putLong(offsetNs).putLong(rttMs)
+            putShort(device.size.toShort()).putShort(pc.size.toShort()).put(device).put(pc)
+        }.array()
+    }
+
+    companion object {
+        const val REQUEST = 1; const val ACCEPT = 2; const val REJECT = 3
+        const val COMMIT = 4; const val COMPLETE = 5; const val CANCEL = 6
+        private const val MAGIC = "SVAC"
+        private const val HEADER_SIZE = 44
+        private const val MAX_ID_BYTES = 64
+
+        fun decode(data: ByteArray, length: Int): PeerCalibrationControl? {
+            if (length < HEADER_SIZE || data.copyOfRange(0, 4).decodeToString() != MAGIC || data[4].toInt() != SteamVoiceProtocol.version) return null
+            val kind = data[5].toInt() and 0xff
+            if (kind !in REQUEST..CANCEL) return null
+            val b = ByteBuffer.wrap(data, 0, length).order(ByteOrder.BIG_ENDIAN)
+            val operation = b.getLong(8); val target = b.getLong(16); val offset = b.getLong(24); val rtt = b.getLong(32)
+            val deviceLen = b.getShort(40).toInt() and 0xffff; val pcLen = b.getShort(42).toInt() and 0xffff
+            if (deviceLen !in 1..MAX_ID_BYTES || pcLen !in 1..MAX_ID_BYTES || length != HEADER_SIZE + deviceLen + pcLen) return null
+            val device = ByteArray(deviceLen); val pc = ByteArray(pcLen); b.position(HEADER_SIZE); b.get(device); b.get(pc)
+            return PeerCalibrationControl(kind, operation, device.decodeToString(), pc.decodeToString(), target, offset, rtt)
+        }
+    }
+}
+
 object SteamVoiceProtocol {
     const val port = 40125
     const val version = 4

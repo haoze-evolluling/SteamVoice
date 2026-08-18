@@ -33,9 +33,9 @@ object AndroidClockSync {
                 }
             }
         }
-        // Monotonic clocks have unrelated boot-time origins. The residual is the
-        // useful calibration result after establishing that mapping.
-        val offset = estimator.relativeOffsetMs() ?: return null
+        // Unlike the PC playback telemetry, peer calibration needs the actual
+        // mapping between two boot-relative clocks to schedule one instant.
+        val offset = estimator.medianOffsetMs() ?: return null
         val rtt = estimator.lastRttMs() ?: return null
         return AndroidClockSyncResult(offset, rtt)
     }
