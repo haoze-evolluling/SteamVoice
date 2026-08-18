@@ -151,6 +151,10 @@ func parseEntry(e *zeroconf.ServiceEntry) (Device, bool) {
 	if name == "" {
 		name = strings.TrimSuffix(strings.TrimSpace(e.HostName), ".")
 	}
+	// Android prefixes its mDNS instance with the service name. Keep that
+	// protocol marker out of the user-facing device name, matching Android's
+	// own discovery display.
+	name = strings.TrimPrefix(name, "SteamVoice-")
 	values := map[string]string{}
 	for _, raw := range e.Text {
 		p := strings.SplitN(raw, "=", 2)
