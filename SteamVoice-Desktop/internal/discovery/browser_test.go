@@ -8,7 +8,7 @@ import (
 
 func TestParseEntryStripsSteamVoiceNamePrefix(t *testing.T) {
 	entry := &zeroconf.ServiceEntry{
-		ServiceRecord: *zeroconf.NewServiceRecord("SteamVoice-Xiaomi 2602BRT18C", ServiceType, "local."),
+		ServiceRecord: *zeroconf.NewServiceRecord(`SteamVoice-Xiaomi\ 2602BRT18C`, ServiceType, "local."),
 		HostName:      "xiaomi.local.",
 		Port:          40125,
 		Text:          []string{"role=speaker", "codec=opus", "device_id=android-1"},

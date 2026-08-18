@@ -155,6 +155,9 @@ func parseEntry(e *zeroconf.ServiceEntry) (Device, bool) {
 	// protocol marker out of the user-facing device name, matching Android's
 	// own discovery display.
 	name = strings.TrimPrefix(name, "SteamVoice-")
+	// DNS-SD escapes spaces in instance names as "\\ "; expose the friendly
+	// name rather than the wire-format escape sequence.
+	name = strings.ReplaceAll(name, `\ `, " ")
 	values := map[string]string{}
 	for _, raw := range e.Text {
 		p := strings.SplitN(raw, "=", 2)
