@@ -332,6 +332,14 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .mini-steps i.done { background: #4fc08d; border-color: #4fc08d; }
 .mini-steps i.active { background: #086d4d; border-color: #086d4d; transform: scale(1.25); animation: breathe 1.1s ease-in-out infinite; }
 @keyframes breathe { 50% { box-shadow: 0 0 0 4px rgba(8, 109, 77, 0.15); } }
+.sync-panel.done .mini-steps i { animation: sync-dot-pulse 1.2s ease-in-out infinite; }
+.sync-panel.done .mini-steps i:nth-child(2) { animation-delay: 150ms; }
+.sync-panel.done .mini-steps i:nth-child(3) { animation-delay: 300ms; }
+.sync-panel.done .mini-steps i:nth-child(4) { animation-delay: 450ms; }
+@keyframes sync-dot-pulse {
+  0%, 100% { opacity: 0.65; transform: scale(0.9); box-shadow: 0 0 0 0 rgba(8, 109, 77, 0); }
+  45% { opacity: 1; transform: scale(1.3); box-shadow: 0 0 0 3px rgba(8, 109, 77, 0.16); }
+}
 .wave { display: inline-flex; align-items: center; gap: 3px; height: 20px; flex: none; }
 .wave i { width: 3px; height: 6px; border-radius: 2px; background: #086d4d; opacity: 0.75; animation: wavebar 1s ease-in-out infinite; }
 .wave.lg { height: 30px; gap: 4px; }
@@ -350,7 +358,6 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .fold-enter-from, .fold-leave-to { opacity: 0; transform: translateY(-6px); }
 .fade-enter-active, .fade-leave-active { transition: opacity 0.6s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
-@media (prefers-reduced-motion: reduce) { .wave i, .link-line .pulse, .mini-steps i.active, .calib-steps li.active, .sync-panel.done .node-chip.phase-3 { animation: none; } }
 .field-hint { font-size: 13px; margin-bottom: 8px; } .muted { color: #687077; font-size: 12px; }
 .text-input { box-sizing: border-box; width: min(420px, 100%); padding: 9px 10px; border: 1px solid #b8c0c6; background: #fff; color: #172033; font: inherit; } .ntp-actions { display: flex; gap: 8px; margin-top: 10px; }
 .authorized { display: flex; flex-direction: column; gap: 6px; } .authorized-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #d9dde1; background: #fff; } .authorized-row .muted { display: block; } .authorized-row div { min-width: 0; } .danger { color: #a24a18; }
