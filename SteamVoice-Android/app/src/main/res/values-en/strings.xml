@@ -67,7 +67,7 @@
     <!-- Settings -->
     <string name="settings_title">Settings</string>
     <string name="settings_bitrate_title">Initial bitrate</string>
-    <string name="settings_bitrate_desc">Initial Opus bitrate used when the PC connects; it adapts to the network during playback</string>
+    <string name="settings_bitrate_desc">Opus bitrate used when the PC connects; it remains fixed during playback</string>
     <string name="bitrate_recommended">Recommended · Suits most home networks</string>
     <string name="settings_frame_title">Audio frame duration</string>
     <string name="settings_frame_desc">Shorter frames mean lower latency but are more sensitive to network jitter</string>

@@ -66,7 +66,7 @@
     <!-- 设置 -->
     <string name="settings_title">设置</string>
     <string name="settings_bitrate_title">初始发送码率</string>
-    <string name="settings_bitrate_desc">电脑端发起连接时使用的初始 Opus 码率，播放中会根据网络自动调整</string>
+    <string name="settings_bitrate_desc">电脑端发起连接时使用的 Opus 码率，播放中保持不变</string>
     <string name="bitrate_recommended">推荐 · 覆盖大多数家庭网络</string>
     <string name="settings_frame_title">音频帧时长</string>
     <string name="settings_frame_desc">帧长越小延迟越低，但对网络抖动更敏感</string>

@@ -11,7 +11,6 @@ import (
 )
 
 const minBitrate = 48000
-const bitrateStep = 16000
 const connectRequestInterval = 1500 * time.Millisecond
 
 type Sender struct {
@@ -141,7 +140,6 @@ func (s *Sender) RequestConnection(selfID, selfName string, timeout time.Duratio
 func (s *Sender) feedbackLoop() {
 	defer s.feedbackWG.Done()
 	buf := make([]byte, 256)
-	lowSince := time.Time{}
 	for {
 		if time.Since(s.lastHeartbeat) >= time.Duration(protocol.HeartbeatIntervalMs)*time.Millisecond {
 			s.lastHeartbeat = time.Now()
@@ -190,52 +188,11 @@ func (s *Sender) feedbackLoop() {
 		s.mu.Lock()
 		s.lastFeedback = time.Now()
 		feedbackCB := s.onFeedback
-		cur := int(s.bitrate)
-		loss := float64(f.Lost) / float64(max32(f.Received+f.Lost, 1))
-		next := cur
-		if loss > 0.05 || f.Queue > 1 {
-			next -= bitrateStep
-			lowSince = time.Time{}
-		} else if loss < 0.01 {
-			if lowSince.IsZero() {
-				lowSince = time.Now()
-			} else if time.Since(lowSince) >= 2*time.Second {
-				next += bitrateStep
-				lowSince = time.Time{}
-			}
-		} else {
-			lowSince = time.Time{}
-		}
-		next = clamp(next)
-		if next != cur {
-			s.bitrate = uint32(next)
-			cb := s.onBitrate
-			s.mu.Unlock()
-			if cb != nil {
-				cb(next)
-			}
-		} else {
-			s.mu.Unlock()
-		}
+		s.mu.Unlock()
 		if feedbackCB != nil {
 			feedbackCB(f)
 		}
 	}
-}
-func max32(a, b uint32) uint32 {
-	if a > b {
-		return a
-	}
-	return b
-}
-func clamp(b int) int {
-	if b < minBitrate {
-		return minBitrate
-	}
-	if b > 192000 {
-		return 192000
-	}
-	return minBitrate + ((b-minBitrate+8000)/16000)*16000
 }
 
 // SendOpus sends one already encoded Opus frame stamped with tsNs, the
