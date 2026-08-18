@@ -29,7 +29,7 @@ class AudioReceiverService : Service() {
         const val TAG = "SteamVoiceReceiver"; const val MAX_UDP_PACKET = 65535
         const val AUTH_NOTIFICATION_ID = 9
         const val PROMPT_EXPIRY_MS = 35_000L
-        const val AUDIO_SILENCE_TIMEOUT_NS = 10_000_000_000L
+        const val HEARTBEAT_TIMEOUT_NS = 3_500_000_000L
         const val ACTION_RESPOND = "com.haoze.steamvoice.action.RESPOND"
         const val EXTRA_REQUEST_ID = "request_id"; const val EXTRA_ALLOW = "allow"; const val EXTRA_REMEMBER = "remember"
         fun timeSyncIntervalNs(hasEstimate: Boolean): Long = if (hasEstimate) 2_000_000_000L else 250_000_000L
@@ -44,7 +44,7 @@ class AudioReceiverService : Service() {
     private var mediaSession: MediaSession? = null
 
     /** 仅在接收线程访问：等待用户决定的连接请求。 */
-    private class PromptRecord(val prompt: PcAuthPrompt, val address: InetAddress, val port: Int)
+    private class PromptRecord(val prompt: PcAuthPrompt, val address: InetAddress, val port: Int, val nonce: Long)
 
     private val pendingPrompts = HashMap<String, PromptRecord>()
 
@@ -76,7 +76,7 @@ class AudioReceiverService : Service() {
         activePc?.let { pc ->
             // 让电脑端立即断开会话，而不是等反馈超时。
             try {
-                val bye = ConnControl(ConnControl.KIND_BYE, selfIdBlocking()).encode()
+                val bye = ConnControl(ConnControl.KIND_BYE, selfIdBlocking(), nonce = pc.nonce).encode()
                 socket?.send(DatagramPacket(bye, bye.size, pc.address, SteamVoiceProtocol.desktopControlPort))
             } catch (_: Exception) {}
         }
@@ -162,6 +162,8 @@ class AudioReceiverService : Service() {
         val clockSync = ClockSyncEstimator()
         var lastTimeSyncSentNs = 0L
         var lastAudioNs = System.nanoTime()
+        var lastHeartbeatNs = System.nanoTime()
+        var heartbeatPcId = ""
         var expectedNextTsNs = 0L
         var lastFrameMsNs = 10_000_000L
         val player = SynchronizedPlayer(track)
@@ -210,6 +212,11 @@ class AudioReceiverService : Service() {
         try {
             socket?.soTimeout = 50
             while (!stopRequested && !Thread.currentThread().isInterrupted) {
+                val currentPcId = activePc?.deviceId ?: ""
+                if (currentPcId != heartbeatPcId) {
+                    heartbeatPcId = currentPcId
+                    lastHeartbeatNs = System.nanoTime()
+                }
                 // 采纳连接器登记的发送方（手机主动连接电脑的场景）。
                 ConnectionBus.queuedSender?.let { queued ->
                     ConnectionBus.queuedSender = null
@@ -245,7 +252,7 @@ class AudioReceiverService : Service() {
                 try { socket?.receive(datagram) } catch (_: java.net.SocketTimeoutException) { gotPacket = false }
                 if (!gotPacket) {
                     // 无音频超过 10s：电脑端可能异常退出或网络中断，主动清理连接状态。
-                    if (activePc != null && System.nanoTime() - lastAudioNs > AUDIO_SILENCE_TIMEOUT_NS) {
+                    if (activePc != null && System.nanoTime() - lastHeartbeatNs > HEARTBEAT_TIMEOUT_NS) {
                         val gone = activePc
                         activePc = null
                         ConnectionBus.activePc.value = null
@@ -254,7 +261,7 @@ class AudioReceiverService : Service() {
                         // 通知电脑端立即 teardown，避免两端连接状态不一致。
                         gone?.let { pc ->
                             runCatching {
-                                val bye = ConnControl(ConnControl.KIND_BYE, selfIdBlocking()).encode()
+                                val bye = ConnControl(ConnControl.KIND_BYE, selfIdBlocking(), nonce = pc.nonce).encode()
                                 socket?.send(DatagramPacket(bye, bye.size, pc.address, SteamVoiceProtocol.desktopControlPort))
                             }
                         }
@@ -272,6 +279,10 @@ class AudioReceiverService : Service() {
                 }
                 val heartbeat = HeartbeatControl.decode(datagram.data, datagram.length)
                 if (heartbeat != null) {
+                    if (activePc != null && (activeSession == 0L || heartbeat.session == activeSession)) {
+                        if (activeSession == 0L) activeSession = heartbeat.session
+                        lastHeartbeatNs = System.nanoTime()
+                    }
                     if (heartbeat.kind == HeartbeatControl.KIND_PING) {
                         val pong = HeartbeatControl(HeartbeatControl.KIND_PONG, heartbeat.session, heartbeat.sequence, System.nanoTime()).encode()
                         runCatching { socket?.send(DatagramPacket(pong, pong.size, datagram.address, datagram.port)) }
@@ -365,18 +376,18 @@ class AudioReceiverService : Service() {
                 val name = conn.name.ifBlank { conn.deviceId.take(8) }
                 val trusted = runBlocking { trust.isTrusted(conn.deviceId) }
                 if (activePc?.deviceId == conn.deviceId || trusted) {
-                    respondConn(datagram.address, datagram.port, allow = true)
-                    adoptPc(ActivePc(conn.deviceId, name, datagram.address, datagram.port))
+                    respondConn(datagram.address, datagram.port, allow = true, nonce = conn.nonce)
+                    adoptPc(ActivePc(conn.deviceId, name, datagram.address, datagram.port, conn.nonce))
                 } else {
                     val requestId = java.util.UUID.randomUUID().toString().replace("-", "").take(16)
                     val prompt = PcAuthPrompt(requestId, conn.deviceId, name, datagram.address.hostAddress ?: "", System.currentTimeMillis())
-                    pendingPrompts[requestId] = PromptRecord(prompt, datagram.address, datagram.port)
+                    pendingPrompts[requestId] = PromptRecord(prompt, datagram.address, datagram.port, conn.nonce)
                     ConnectionBus.authPrompt.value = prompt
                     postAuthNotification(prompt)
                 }
             }
             ConnControl.KIND_BYE -> {
-                if (activePc?.deviceId == conn.deviceId) {
+                if (activePc?.deviceId == conn.deviceId && activePc?.nonce == conn.nonce) {
                     val gone = activePc
                     activePc = null
                     ConnectionBus.activePc.value = null
@@ -393,10 +404,10 @@ class AudioReceiverService : Service() {
         val record = pendingPrompts.remove(decision.first) ?: return
         ConnectionBus.authPrompt.value = null
         dismissAuthNotification()
-        respondConn(record.address, record.port, decision.second)
+        respondConn(record.address, record.port, decision.second, record.nonce)
         if (decision.second) {
             if (decision.third) runBlocking { PcTrustRepository(applicationContext).trust(record.prompt.deviceId, record.prompt.name) }
-            adoptPc(ActivePc(record.prompt.deviceId, record.prompt.name, record.address, record.port))
+            adoptPc(ActivePc(record.prompt.deviceId, record.prompt.name, record.address, record.port, record.nonce))
         }
     }
 
@@ -422,10 +433,10 @@ class AudioReceiverService : Service() {
         ConnectionBus.notify(R.string.msg_connected, pc.name)
     }
 
-    private fun respondConn(address: InetAddress, port: Int, allow: Boolean) {
+    private fun respondConn(address: InetAddress, port: Int, allow: Boolean, nonce: Long) {
         try {
             val selfId = runBlocking { SettingsRepository(applicationContext).settings.first().deviceId }
-            val response = ConnControl(ConnControl.KIND_RESPONSE, selfId, allow = allow).encode()
+            val response = ConnControl(ConnControl.KIND_RESPONSE, selfId, allow = allow, nonce = nonce).encode()
             socket?.send(DatagramPacket(response, response.size, address, port))
         } catch (e: Exception) {
             Log.w(TAG, "respond conn failed: ${e.message}")

@@ -177,7 +177,7 @@ class MainActivity : ComponentActivity() {
             if (result is PcConnector.ConnectResult.Accepted) {
                 // 电脑同意后登记发送方，接收循环据此放行音频。
                 runCatching {
-                    ConnectionBus.queuedSender = ActivePc(pc.deviceId, pc.name, java.net.InetAddress.getByName(pc.host))
+                    ConnectionBus.queuedSender = ActivePc(pc.deviceId, pc.name, java.net.InetAddress.getByName(pc.host), nonce = result.nonce)
                 }
             }
             runOnUiThread { onDone(result) }

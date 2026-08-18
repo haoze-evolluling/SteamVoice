@@ -14,6 +14,7 @@ data class ActivePc(
     // the desktop. Bind this to the first authenticated audio packet.
     var address: InetAddress,
     var port: Int = 0,
+    var nonce: Long = 0L,
 )
 
 /** 等待用户决定的电脑连接请求。 */

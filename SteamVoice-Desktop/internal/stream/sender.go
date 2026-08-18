@@ -30,6 +30,7 @@ type Sender struct {
 	now           func() uint64
 	heartbeatSeq  uint32
 	lastHeartbeat time.Time
+	connNonce     uint64
 }
 
 func NewSender(address string, args ...int) (*Sender, error) {
@@ -101,6 +102,8 @@ func (s *Sender) FeedbackIdle() time.Duration {
 // LocalAddr reports the UDP source address feedback should be sent to.
 func (s *Sender) LocalAddr() net.Addr { return s.conn.LocalAddr() }
 
+func (s *Sender) ConnNonce() uint64 { s.mu.Lock(); defer s.mu.Unlock(); return s.connNonce }
+
 func (s *Sender) SendSettings(settings protocol.Settings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -112,7 +115,11 @@ func (s *Sender) SendSettings(settings protocol.Settings) error {
 // the request until it answers or the timeout elapses. A cached answer that
 // raced the first wait is honored too.
 func (s *Sender) RequestConnection(selfID, selfName string, timeout time.Duration) bool {
-	req, err := protocol.EncodeConn(protocol.ConnControl{Kind: protocol.ConnRequest, DeviceID: selfID, Name: selfName})
+	s.mu.Lock()
+	s.connNonce = protocol.NewConnNonce()
+	nonce := s.connNonce
+	s.mu.Unlock()
+	req, err := protocol.EncodeConn(protocol.ConnControl{Kind: protocol.ConnRequest, DeviceID: selfID, Name: selfName, Nonce: nonce})
 	if err != nil {
 		return false
 	}
@@ -129,7 +136,7 @@ func (s *Sender) RequestConnection(selfID, selfName string, timeout time.Duratio
 		}
 		select {
 		case r := <-s.connResult:
-			return r.Allow
+			return r.Allow && (r.Nonce == nonce || r.Nonce == 0)
 		case <-s.feedbackDone:
 			return false
 		case <-time.After(wait):
@@ -157,6 +164,14 @@ func (s *Sender) feedbackLoop() {
 			continue
 		}
 		if c, err := protocol.DecodeConn(buf[:n]); err == nil && c.Kind == protocol.ConnResponse {
+			s.mu.Lock()
+			nonce := s.connNonce
+			s.mu.Unlock()
+			// Zero is the pre-nonce wire format used by older peers; retain
+			// interoperability for responses while all new sessions use nonce.
+			if c.Nonce != nonce && c.Nonce != 0 {
+				continue
+			}
 			select {
 			case s.connResult <- c:
 			default:
@@ -211,7 +226,10 @@ func (s *Sender) SendOpus(tsNs uint64, opus []byte) error {
 // SendBye tells the receiver the session is over so its UI can disconnect
 // immediately instead of waiting for the audio-silence timeout.
 func (s *Sender) SendBye(selfID string) error {
-	b, err := protocol.EncodeConn(protocol.ConnControl{Kind: protocol.ConnBye, DeviceID: selfID})
+	s.mu.Lock()
+	nonce := s.connNonce
+	s.mu.Unlock()
+	b, err := protocol.EncodeConn(protocol.ConnControl{Kind: protocol.ConnBye, DeviceID: selfID, Nonce: nonce})
 	if err != nil {
 		return err
 	}

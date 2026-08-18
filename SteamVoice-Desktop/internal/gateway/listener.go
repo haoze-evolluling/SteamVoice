@@ -16,6 +16,7 @@ type Peer struct {
 	DeviceID string
 	Name     string
 	Addr     *net.UDPAddr
+	Nonce    uint64
 }
 
 // Listener receives connection control datagrams from receivers and lets the
@@ -24,19 +25,26 @@ type Listener struct {
 	conn      *net.UDPConn
 	selfID    string
 	onRequest func(Peer)
-	onBye     func(deviceID string, addr *net.UDPAddr)
+	onBye     func(deviceID string, nonce uint64, addr *net.UDPAddr)
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 }
 
 // Start binds the control port; port 0 picks an ephemeral port (tests).
 // selfID is the identity stamped into outgoing responses.
-func Start(port int, selfID string, onRequest func(Peer), onBye func(deviceID string, addr *net.UDPAddr)) (*Listener, error) {
+func Start(port int, selfID string, onRequest func(Peer), onBye interface{}) (*Listener, error) {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: port})
 	if err != nil {
 		return nil, err
 	}
-	l := &Listener{conn: conn, selfID: selfID, onRequest: onRequest, onBye: onBye}
+	var bye func(string, uint64, *net.UDPAddr)
+	switch fn := onBye.(type) {
+	case func(string, uint64, *net.UDPAddr):
+		bye = fn
+	case func(string, *net.UDPAddr):
+		bye = func(id string, _ uint64, addr *net.UDPAddr) { fn(id, addr) }
+	}
+	l := &Listener{conn: conn, selfID: selfID, onRequest: onRequest, onBye: bye}
 	l.wg.Add(1)
 	go l.loop()
 	return l, nil
@@ -59,7 +67,7 @@ func (l *Listener) loop() {
 		if err != nil {
 			continue
 		}
-		peer := Peer{DeviceID: msg.DeviceID, Name: msg.Name, Addr: addr}
+		peer := Peer{DeviceID: msg.DeviceID, Name: msg.Name, Addr: addr, Nonce: msg.Nonce}
 		switch msg.Kind {
 		case protocol.ConnRequest:
 			if l.onRequest != nil {
@@ -67,7 +75,7 @@ func (l *Listener) loop() {
 			}
 		case protocol.ConnBye:
 			if l.onBye != nil {
-				l.onBye(msg.DeviceID, addr)
+				l.onBye(msg.DeviceID, msg.Nonce, addr)
 			}
 		}
 	}
@@ -75,7 +83,7 @@ func (l *Listener) loop() {
 
 // Respond answers a pending request from peer.
 func (l *Listener) Respond(peer Peer, allow bool) error {
-	b, err := protocol.EncodeConn(protocol.ConnControl{Kind: protocol.ConnResponse, DeviceID: l.selfID, Allow: allow})
+	b, err := protocol.EncodeConn(protocol.ConnControl{Kind: protocol.ConnResponse, DeviceID: l.selfID, Allow: allow, Nonce: peer.Nonce})
 	if err != nil {
 		return err
 	}

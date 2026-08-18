@@ -597,7 +597,13 @@ func (a *App) onConnRequest(peer gateway.Peer) {
 }
 
 // onConnBye drops the session when a receiver says goodbye.
-func (a *App) onConnBye(deviceID string, _ *net.UDPAddr) {
+func (a *App) onConnBye(deviceID string, nonce uint64, _ *net.UDPAddr) {
+	a.mu.Lock()
+	session := a.sessions[deviceID]
+	a.mu.Unlock()
+	if session == nil || session.sender.ConnNonce() != nonce {
+		return
+	}
 	if err := a.Disconnect(deviceID); err != nil {
 		log.Printf("disconnect after bye from %s failed: %v", deviceID, err)
 	}

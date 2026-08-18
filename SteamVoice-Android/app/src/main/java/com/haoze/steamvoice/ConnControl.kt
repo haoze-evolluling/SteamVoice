@@ -7,16 +7,17 @@ import java.nio.ByteOrder
  * 连接控制报文（SVCR），与桌面端 internal/protocol/conn.go 保持一致。
  * 请求方携带稳定设备 ID 与名称；响应方返回允许/拒绝；断开用于即时通知对端。
  */
-data class ConnControl(val kind: Int, val deviceId: String, val name: String = "", val allow: Boolean = false) {
+data class ConnControl(val kind: Int, val deviceId: String, val name: String = "", val allow: Boolean = false, val nonce: Long = 0L) {
 
     fun encode(): ByteArray {
         val id = deviceId.toByteArray(Charsets.UTF_8)
         require(id.isNotEmpty() && id.size <= MAX_DEVICE_ID_LEN) { "invalid device id length" }
         val nameBytes = truncateUtf8(name, MAX_NAME_LEN)
+        val prefix = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(nonce).array()
         val body: ByteArray = when (kind) {
-            KIND_REQUEST -> id + byteArrayOf(0) + nameBytes
-            KIND_RESPONSE -> id + byteArrayOf(0, if (allow) ALLOW else DENY)
-            KIND_BYE -> id
+            KIND_REQUEST -> prefix + id + byteArrayOf(0) + nameBytes
+            KIND_RESPONSE -> prefix + id + byteArrayOf(0, if (allow) ALLOW else DENY)
+            KIND_BYE -> prefix + id
             else -> throw IllegalArgumentException("unknown conn control kind $kind")
         }
         return ByteBuffer.allocate(HEADER_SIZE + body.size).order(ByteOrder.BIG_ENDIAN).apply {
@@ -44,29 +45,32 @@ data class ConnControl(val kind: Int, val deviceId: String, val name: String = "
             if (String(data, 0, 4, Charsets.UTF_8) != MAGIC) return null
             if (data[4].toInt() != SteamVoiceProtocol.version) return null
             val kind = data[5].toInt() and 0xff
-            val nul = findNul(data, HEADER_SIZE, length)
+            if (length < HEADER_SIZE + 8) return null
+            val nonce = ByteBuffer.wrap(data, HEADER_SIZE, 8).order(ByteOrder.BIG_ENDIAN).long
+            val bodyStart = HEADER_SIZE + 8
+            val nul = findNul(data, bodyStart, length)
             fun field(start: Int, end: Int) = String(data, start, end - start, Charsets.UTF_8)
             return when (kind) {
                 KIND_REQUEST -> {
                     if (nul <= HEADER_SIZE) return null
-                    val id = field(HEADER_SIZE, nul)
+                    val id = field(bodyStart, nul)
                     if (!validId(id)) return null
-                    ConnControl(kind, id, field(nul + 1, length))
+                    ConnControl(kind, id, field(nul + 1, length), nonce = nonce)
                 }
                 KIND_RESPONSE -> {
-                    if (nul <= HEADER_SIZE || length != nul + 2) return null
-                    val id = field(HEADER_SIZE, nul)
+                    if (nul <= bodyStart || length != nul + 2) return null
+                    val id = field(bodyStart, nul)
                     if (!validId(id)) return null
                     when (data[length - 1]) {
-                        ALLOW -> ConnControl(kind, id, allow = true)
-                        DENY -> ConnControl(kind, id, allow = false)
+                        ALLOW -> ConnControl(kind, id, allow = true, nonce = nonce)
+                        DENY -> ConnControl(kind, id, allow = false, nonce = nonce)
                         else -> null
                     }
                 }
                 KIND_BYE -> {
-                    val id = field(HEADER_SIZE, length)
+                    val id = field(bodyStart, length)
                     if (!validId(id) || nul >= 0) return null
-                    ConnControl(kind, id)
+                    ConnControl(kind, id, nonce = nonce)
                 }
                 else -> null
             }

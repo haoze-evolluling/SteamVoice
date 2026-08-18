@@ -4,6 +4,7 @@ import android.util.Log
 import java.net.DatagramPacket
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
+import java.security.SecureRandom
 
 /**
  * 与电脑端控制端口之间的连接协商。请求通过临时 UDP socket 发送，
@@ -13,15 +14,16 @@ class PcConnector {
 
     sealed interface ConnectResult {
         /** 对端同意，responderId 为电脑的设备标识。 */
-        data class Accepted(val responderId: String) : ConnectResult
+        data class Accepted(val responderId: String, val nonce: Long) : ConnectResult
         data object Denied : ConnectResult
         data object Timeout : ConnectResult
     }
 
     fun request(pc: PcDevice, selfId: String, selfName: String, timeoutMs: Int = 8000): ConnectResult {
         ConnectionBus.transition(pc.deviceId, ConnectionEvent.CONNECT)
+        val nonce = SecureRandom().nextLong().let { if (it == 0L) 1L else it }
         val payload = try {
-            ConnControl(ConnControl.KIND_REQUEST, selfId, selfName).encode()
+            ConnControl(ConnControl.KIND_REQUEST, selfId, selfName, nonce = nonce).encode()
         } catch (e: IllegalArgumentException) {
             Log.e(TAG, "invalid identity for connect request", e)
             ConnectionBus.transition(pc.deviceId, ConnectionEvent.HANDSHAKE_TIMEOUT)
@@ -47,9 +49,10 @@ class PcConnector {
                 }
                 val msg = ConnControl.decode(buf, datagram.length) ?: continue
                 if (msg.kind == ConnControl.KIND_RESPONSE) {
+                    if (datagram.address != target.address || datagram.port != target.port || msg.nonce != nonce || msg.deviceId != pc.deviceId) continue
                     return if (msg.allow) {
                         ConnectionBus.transition(pc.deviceId, ConnectionEvent.AUTHORIZED)
-                        ConnectResult.Accepted(msg.deviceId)
+                        ConnectResult.Accepted(msg.deviceId, nonce)
                     } else {
                         ConnectionBus.transition(pc.deviceId, ConnectionEvent.DENIED)
                         ConnectResult.Denied
@@ -62,9 +65,9 @@ class PcConnector {
     }
 
     /** 通知电脑断开连接；UDP 不可靠，连发三次提高送达率。 */
-    fun bye(pc: PcDevice, selfId: String) {
+    fun bye(pc: PcDevice, selfId: String, nonce: Long = 0L) {
         val payload = try {
-            ConnControl(ConnControl.KIND_BYE, selfId).encode()
+            ConnControl(ConnControl.KIND_BYE, selfId, nonce = nonce).encode()
         } catch (e: IllegalArgumentException) {
             Log.e(TAG, "invalid identity for bye", e)
             return
