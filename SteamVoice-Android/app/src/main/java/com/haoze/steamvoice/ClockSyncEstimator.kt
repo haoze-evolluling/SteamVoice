@@ -69,6 +69,11 @@ class ClockSyncEstimator(
         samples.lastOrNull()?.rttNs?.div(1_000_000)
     }
 
+    fun reset() = synchronized(samples) {
+        samples.clear()
+        referenceOffset = null
+    }
+
     private fun pruneLocked() {
         val now = nowNs()
         while (samples.isNotEmpty() && now - samples.first().atNs > maxSampleAgeNs) {

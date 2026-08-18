@@ -163,7 +163,7 @@ class AudioReceiverService : Service() {
         var heartbeatPcId = ""
         var expectedNextTsNs = 0L
         var lastFrameMsNs = 10_000_000L
-        val player = SynchronizedPlayer(track)
+        val player = SynchronizedPlayer(track, trackFactory = { newTrack() })
         player.setClock { streamNs -> clockSync.mapToLocal(streamNs) }
         player.start()
         var playerOverflow = 0L
@@ -320,7 +320,13 @@ class AudioReceiverService : Service() {
                 lastAddress = datagram.address; lastPort = datagram.port
                 lastAudioNs = System.nanoTime()
                 updatePlaybackState(true)
-                if (activeSession != 0L && activeSession != packet.session) { highest = 0; receivedCount = 0; lostCount = 0; fecPending = false; expectedNextTsNs = 0L }
+                if (activeSession != 0L && activeSession != packet.session) {
+                    Log.i(TAG, "new audio session $activeSession -> ${packet.session}; resetting playback timeline")
+                    buffer.clear()
+                    clockSync.reset()
+                    player.resetForSession()
+                    highest = 0; receivedCount = 0; lostCount = 0; fecPending = false; expectedNextTsNs = 0L
+                }
                 activeSession = packet.session
                 actualBitrate = packet.bitrate
                 if (packet.sequence > highest) { lostCount += (packet.sequence - highest - if (receivedCount == 0L) 0 else 1).coerceAtLeast(0); highest = packet.sequence }

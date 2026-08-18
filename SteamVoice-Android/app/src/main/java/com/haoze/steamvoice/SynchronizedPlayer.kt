@@ -1,6 +1,7 @@
 package com.haoze.steamvoice
 
 import android.media.AudioTrack
+import android.util.Log
 import java.util.concurrent.ArrayBlockingQueue
 import kotlin.concurrent.thread
 import kotlin.math.abs
@@ -16,7 +17,8 @@ import kotlin.math.min
  * 校准过程不产生跳音或爆音。
  */
 class SynchronizedPlayer(
-    private val track: AudioTrack,
+    private var track: AudioTrack,
+    private val trackFactory: (() -> AudioTrack)? = null,
     val latencyBudgetNs: Long = 150_000_000L,
     private val nowNs: () -> Long = System::nanoTime,
 ) {
@@ -59,6 +61,20 @@ class SynchronizedPlayer(
         worker?.interrupt()
     }
 
+    /** Drop frames from the previous connection while keeping the worker alive. */
+    fun resetForSession() {
+        queue.clear()
+        playedFrames = 0L
+        latenessEmaNs = 0.0
+        playbackRate = NOMINAL_RATE
+        nextRateCheckNs = 0L
+        runCatching {
+            track.pause()
+            track.flush()
+            track.play()
+        }.onFailure { Log.w(TAG, "AudioTrack reset failed", it) }
+    }
+
     private fun runLoop() {
         while (!closed && !Thread.currentThread().isInterrupted) {
             val head = queue.peek()
@@ -94,6 +110,18 @@ class SynchronizedPlayer(
             adjustRateIfNeeded()
             val written = track.write(head.pcm, 0, head.pcm.size, AudioTrack.WRITE_BLOCKING)
             if (written < 0) {
+                Log.e(TAG, "AudioTrack.write failed result=$written state=${track.state} playState=${track.playState}")
+                val factory = trackFactory
+                if (written == AudioTrack.ERROR_DEAD_OBJECT && factory != null) {
+                    val old = track
+                    val replacement = runCatching { factory.invoke() }.getOrNull()
+                    if (replacement != null) {
+                        track = replacement
+                        runCatching { old.release() }
+                        Log.i(TAG, "AudioTrack recreated after dead object")
+                        continue
+                    }
+                }
                 break
             }
             playedFrames++
@@ -134,6 +162,7 @@ class SynchronizedPlayer(
     }
 
     private companion object {
+        const val TAG = "SteamVoicePlayer"
         const val QUEUE_CAPACITY = 256
         const val NOMINAL_RATE = 48000
         const val RATE_STEP_HZ = 24
