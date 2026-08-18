@@ -88,7 +88,7 @@ watch(allCalibrated, (now, was) => {
   if (!now || was) return;
   syncFlash.value = true;
 });
-function showSyncPanel(): boolean { return calibratingCount.value > 0 || (syncFlash.value && connectedCount.value > 1); }
+function showSyncPanel(): boolean { return calibratingCount.value > 0 || (syncFlash.value && connectedCount.value > 0); }
 function syncSummary(): string {
   return connectedDevices.value.map((device) => t('sync.summaryItem', { name: device.name, offset: Math.abs(calibration.value[device.id]?.offsetMs ?? 0) })).join(' · ');
 }
