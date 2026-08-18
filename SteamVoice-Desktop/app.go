@@ -384,9 +384,6 @@ func (a *App) Connect(device Device) error {
 			log.Printf("settings sync failed: %v", err)
 		}
 	}
-	if err := sender.SendNTPServer(a.store.NTPServerName()); err != nil {
-		log.Printf("NTP server sync failed: %v", err)
-	}
 	a.mu.Lock()
 	if a.frameMs != 0 && a.frameMs != frameMs {
 		a.mu.Unlock()

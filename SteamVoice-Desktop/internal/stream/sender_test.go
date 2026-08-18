@@ -51,9 +51,7 @@ func TestSenderSendsPCMCodec(t *testing.T) {
 	}
 	defer sender.Close()
 	want := []byte{0, 1, 2, 3}
-	if err = sender.SendPCM(want); err != nil {
-		t.Fatal(err)
-	}
+	if err = sender.SendOpus(0, want); err != nil { t.Fatal(err) }
 	_ = listener.SetReadDeadline(time.Now().Add(time.Second))
 	buf := make([]byte, 256)
 	n, _, err := listener.ReadFromUDP(buf)
@@ -64,7 +62,7 @@ func TestSenderSendsPCMCodec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.Codec != protocol.CodecPCM || string(payload) != string(want) {
+	if h.Codec != protocol.CodecOpus || string(payload) != string(want) {
 		t.Fatalf("header=%+v payload=%v", h, payload)
 	}
 }

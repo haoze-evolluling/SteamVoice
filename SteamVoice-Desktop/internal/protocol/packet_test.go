@@ -54,7 +54,7 @@ func TestTimestampRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDecodeRejectsV3Packets(t *testing.T) {
+func TestDecodeRejectsWrongVersion(t *testing.T) {
 	b, err := Encode(Header{TimestampNs: 5}, []byte{1})
 	if err != nil {
 		t.Fatal(err)

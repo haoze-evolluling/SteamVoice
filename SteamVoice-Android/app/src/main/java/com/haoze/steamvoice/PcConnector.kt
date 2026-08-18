@@ -19,10 +19,12 @@ class PcConnector {
     }
 
     fun request(pc: PcDevice, selfId: String, selfName: String, timeoutMs: Int = 8000): ConnectResult {
+        ConnectionBus.transition(pc.deviceId, ConnectionEvent.CONNECT)
         val payload = try {
             ConnControl(ConnControl.KIND_REQUEST, selfId, selfName).encode()
         } catch (e: IllegalArgumentException) {
             Log.e(TAG, "invalid identity for connect request", e)
+            ConnectionBus.transition(pc.deviceId, ConnectionEvent.HANDSHAKE_TIMEOUT)
             return ConnectResult.Timeout
         }
         java.net.DatagramSocket().use { socket ->
@@ -45,9 +47,16 @@ class PcConnector {
                 }
                 val msg = ConnControl.decode(buf, datagram.length) ?: continue
                 if (msg.kind == ConnControl.KIND_RESPONSE) {
-                    return if (msg.allow) ConnectResult.Accepted(msg.deviceId) else ConnectResult.Denied
+                    return if (msg.allow) {
+                        ConnectionBus.transition(pc.deviceId, ConnectionEvent.AUTHORIZED)
+                        ConnectResult.Accepted(msg.deviceId)
+                    } else {
+                        ConnectionBus.transition(pc.deviceId, ConnectionEvent.DENIED)
+                        ConnectResult.Denied
+                    }
                 }
             }
+            ConnectionBus.transition(pc.deviceId, ConnectionEvent.HANDSHAKE_TIMEOUT)
             return ConnectResult.Timeout
         }
     }

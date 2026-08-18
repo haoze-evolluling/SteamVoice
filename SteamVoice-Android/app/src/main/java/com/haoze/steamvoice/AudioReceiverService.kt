@@ -270,11 +270,11 @@ class AudioReceiverService : Service() {
                     if (runBlocking { repository.applyIfNewer(incoming) }) settings = incoming
                     continue
                 }
-                val ntpControl = NtpServerControl.decode(datagram.data, datagram.length)
-                if (ntpControl != null) {
-                    thread(name = "steamvoice-ntp") {
-                        NtpClient.queryOffsetMs(ntpControl.server)?.let { Log.i(TAG, "NTP server=${ntpControl.server} offsetMs=$it") }
-                            ?: Log.w(TAG, "NTP server unavailable: ${ntpControl.server}")
+                val heartbeat = HeartbeatControl.decode(datagram.data, datagram.length)
+                if (heartbeat != null) {
+                    if (heartbeat.kind == HeartbeatControl.KIND_PING) {
+                        val pong = HeartbeatControl(HeartbeatControl.KIND_PONG, heartbeat.session, heartbeat.sequence, System.nanoTime()).encode()
+                        runCatching { socket?.send(DatagramPacket(pong, pong.size, datagram.address, datagram.port)) }
                     }
                     continue
                 }

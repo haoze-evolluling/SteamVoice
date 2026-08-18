@@ -74,17 +74,6 @@ data class SettingsControl(val bitrateKbps: Int, val frameMs: Int, val updatedAt
     }
 }
 
-data class NtpServerControl(val server: String) {
-    companion object {
-        private const val SIZE = 264
-        fun decode(data: ByteArray, length: Int): NtpServerControl? {
-            if (length != SIZE || data.copyOfRange(0, 4).decodeToString() != "SVNT" || data[4].toInt() != SteamVoiceProtocol.version || data[5].toInt() != 1) return null
-            val server = data.copyOfRange(8, SIZE).decodeToString().trimEnd('\u0000').trim()
-            return NtpServerControl(if (server.isEmpty()) NtpClient.DEFAULT_SERVER else server)
-        }
-    }
-}
-
 /** NTP 风格的时钟同步报文（SVTS）。t4 由请求方本地记录，不经网络传输。 */
 data class TimeSyncControl(val kind: Int, val t1: Long, val t2: Long, val t3: Long) {
     fun encode(): ByteArray {
@@ -120,6 +109,10 @@ object SteamVoiceProtocol {
     const val frameMilliseconds = 10
     val supportedFrameMilliseconds = setOf(10, 20)
     const val desktopControlPort = 40126
+    const val handshakeTimeoutMs = 8_000L
+    const val requestRetryMs = 1_500L
+    const val heartbeatIntervalMs = 1_000L
+    const val heartbeatTimeoutMs = 3_500L
     private const val headerSize = 40
     fun decode(data: ByteArray, length: Int): SteamVoicePacket? {
         if (length < headerSize || data.copyOfRange(0, 4).decodeToString() != "SV01" || data[4].toInt() != version || data[5].toInt() != codecOpus) return null
@@ -135,5 +128,22 @@ object SteamVoiceProtocol {
         val sequence = buffer.getInt(20).toLong() and 0xffffffffL
         val timestamp = buffer.getLong(32)
         return SteamVoicePacket(data[5].toInt(), rate, channelCount, bitrate, frameMs, session, sequence, data.copyOfRange(headerSize, length), data[28].toInt() and 0xff, timestamp)
+    }
+}
+
+data class HeartbeatControl(val kind: Int, val session: Long, val sequence: Long, val timestampNs: Long) {
+    fun encode(): ByteArray = ByteBuffer.allocate(SIZE).order(ByteOrder.BIG_ENDIAN).apply {
+        put("SVHB".toByteArray()).put(SteamVoiceProtocol.version.toByte()).put(kind.toByte()).putShort(0)
+        putInt(session.toInt()).putInt(sequence.toInt()).putLong(timestampNs).putLong(0)
+    }.array()
+    companion object {
+        const val KIND_PING = 1; const val KIND_PONG = 2; const val SIZE = 32
+        fun decode(data: ByteArray, length: Int): HeartbeatControl? {
+            if (length != SIZE || data.copyOfRange(0, 4).decodeToString() != "SVHB" || data[4].toInt() != SteamVoiceProtocol.version) return null
+            val kind = data[5].toInt() and 0xff
+            if (kind != KIND_PING && kind != KIND_PONG) return null
+            val b = ByteBuffer.wrap(data, 0, length).order(ByteOrder.BIG_ENDIAN)
+            return HeartbeatControl(kind, b.getInt(8).toLong() and 0xffffffffL, b.getInt(12).toLong() and 0xffffffffL, b.getLong(16))
+        }
     }
 }

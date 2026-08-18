@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.net.InetAddress
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.ConcurrentHashMap
 
 /** 当前正在向本机推送音频的电脑。port 为发送方 socket 端口，用于时钟同步。 */
 data class ActivePc(
@@ -48,6 +49,8 @@ object ConnectionBus {
 
     /** 接收服务发布的校准进度；断开连接时置回 null。 */
     val calibration = MutableStateFlow<CalibrationState?>(null)
+    /** Authoritative transport state per stable peer ID. */
+    val states = ConcurrentHashMap<String, MutableStateFlow<ConnectionState>>()
     val messages = MutableSharedFlow<UiMessage>(extraBufferCapacity = 8)
 
     /** 连接器在收到电脑同意后排队登记发送方，接收循环随即采纳。 */
@@ -62,5 +65,18 @@ object ConnectionBus {
 
     fun notify(resId: Int, vararg args: Any) {
         messages.tryEmit(UiMessage(resId, args))
+    }
+
+    fun stateOf(deviceId: String): MutableStateFlow<ConnectionState> =
+        states.getOrPut(deviceId) { MutableStateFlow(ConnectionState.IDLE) }
+
+    /** State transitions are serialized per peer and reject invalid events. */
+    fun transition(deviceId: String, event: ConnectionEvent): ConnectionState {
+        val flow = stateOf(deviceId)
+        synchronized(flow) {
+            val next = nextConnectionState(flow.value, event)
+            flow.value = next
+            return next
+        }
     }
 }

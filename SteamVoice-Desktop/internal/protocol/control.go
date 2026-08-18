@@ -6,16 +6,6 @@ import (
 )
 
 const SettingsControlSize = 40
-const NTPServerControlSize = 264
-
-func EncodeNTPServer(server string) []byte {
-	b := make([]byte, NTPServerControlSize)
-	copy(b, "SVNT")
-	b[4] = Version
-	b[5] = 1
-	copy(b[8:], server)
-	return b
-}
 
 type Settings struct {
 	BitrateKbps uint32
@@ -47,14 +37,11 @@ func DecodeSettings(b []byte) (Settings, error) {
 	return Settings{BitrateKbps: binary.BigEndian.Uint32(b[8:]), FrameMs: binary.BigEndian.Uint16(b[12:]), UpdatedAtMs: int64(binary.BigEndian.Uint64(b[16:])), DeviceID: id}, nil
 }
 
-const ControlSize = 30
-
-// SyncV2Size is the extended feedback length carrying calibration stats.
-const SyncV2Size = 35
+const FeedbackSize = 35
 
 // Receiver sync states reported in feedback, driving the calibration UI.
 const (
-	SyncUnknown     = 0 // legacy receiver or nothing reported yet
+	SyncUnknown     = 0
 	SyncCalibrating = 1 // receiving audio, clock offset still being measured
 	SyncAligned     = 2 // clock offset converged, playback ramping up
 	SyncPlaying     = 3 // synchronized playback running
@@ -65,15 +52,14 @@ type ReceiverFeedback struct {
 	Queue                               uint16
 	Bitrate                             uint32
 	// SyncState plus the receiver's clock-sync measurements (median offset
-	// against the sender clock and exchange round-trip time). Zero values
-	// mean a receiver predating the extension.
+	// against the sender clock and exchange round-trip time).
 	SyncState uint8
 	OffsetMs  int16
 	RttMs     uint16
 }
 
 func EncodeFeedback(f ReceiverFeedback) []byte {
-	b := make([]byte, SyncV2Size)
+	b := make([]byte, FeedbackSize)
 	copy(b, "SVCT")
 	b[4] = Version
 	b[5] = 1
@@ -89,14 +75,12 @@ func EncodeFeedback(f ReceiverFeedback) []byte {
 	return b
 }
 func DecodeFeedback(b []byte) (ReceiverFeedback, error) {
-	if (len(b) != ControlSize && len(b) != SyncV2Size) || string(b[:4]) != "SVCT" || b[4] != Version || b[5] != 1 {
+	if len(b) != FeedbackSize || string(b[:4]) != "SVCT" || b[4] != Version || b[5] != 1 {
 		return ReceiverFeedback{}, errors.New("invalid feedback")
 	}
 	f := ReceiverFeedback{Session: binary.BigEndian.Uint32(b[8:]), HighestSeq: binary.BigEndian.Uint32(b[12:]), Received: binary.BigEndian.Uint32(b[16:]), Lost: binary.BigEndian.Uint32(b[20:]), Queue: binary.BigEndian.Uint16(b[24:]), Bitrate: binary.BigEndian.Uint32(b[26:])}
-	if len(b) == SyncV2Size {
-		f.SyncState = b[30]
-		f.OffsetMs = int16(binary.BigEndian.Uint16(b[31:]))
-		f.RttMs = binary.BigEndian.Uint16(b[33:])
-	}
+	f.SyncState = b[30]
+	f.OffsetMs = int16(binary.BigEndian.Uint16(b[31:]))
+	f.RttMs = binary.BigEndian.Uint16(b[33:])
 	return f, nil
 }

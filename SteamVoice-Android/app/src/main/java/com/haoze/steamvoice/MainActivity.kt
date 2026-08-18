@@ -376,14 +376,19 @@ private fun CalibrationPanel(state: CalibrationState, done: Boolean) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 CalibrationWave(Modifier.size(width = 64.dp, height = 28.dp))
                 Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         if (done) stringResource(R.string.calib_synced) else stringResource(R.string.calibrating),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        textAlign = TextAlign.Center,
                     )
                     val stats = if (done || state.phase == CalibrationPhase.SYNC) {
                         val offset = state.offsetMs
@@ -394,6 +399,7 @@ private fun CalibrationPanel(state: CalibrationState, done: Boolean) {
                         stats ?: state.phase.label(),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                        textAlign = TextAlign.Center,
                     )
                 }
             }
@@ -447,31 +453,39 @@ private fun CalibrationSteps(current: CalibrationPhase) {
         animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse),
         label = "step-pulse-scale",
     )
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        calibrationStepLabels().forEachIndexed { index, label ->
-            if (index > 0) {
-                Spacer(Modifier.width(6.dp))
-                Box(
-                    Modifier
-                        .width(16.dp)
-                        .height(2.dp)
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = if (index <= activeIndex) 0.7f else 0.25f)),
+    val connectorColor = MaterialTheme.colorScheme.primary
+    Box(Modifier.fillMaxWidth()) {
+        Canvas(Modifier.fillMaxWidth().height(10.dp)) {
+            val nodeSpacing = size.width / 4f
+            val connectorY = size.height / 2f
+            for (index in 1 until 4) {
+                drawLine(
+                    color = connectorColor.copy(alpha = if (index <= activeIndex) 0.7f else 0.25f),
+                    start = Offset(nodeSpacing * (index - 0.5f), connectorY),
+                    end = Offset(nodeSpacing * (index + 0.5f), connectorY),
+                    strokeWidth = 2.dp.toPx(),
                 )
-                Spacer(Modifier.width(6.dp))
             }
-            val active = index == activeIndex
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Surface(
-                    shape = CircleShape,
-                    color = if (index <= activeIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.size(10.dp).then(if (active) Modifier.scale(scale) else Modifier),
-                ) {}
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (index <= activeIndex) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.55f),
-                )
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            calibrationStepLabels().forEachIndexed { index, label ->
+                val active = index == activeIndex
+                Column(
+                    modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = if (index <= activeIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.size(10.dp).then(if (active) Modifier.scale(scale) else Modifier),
+                    ) {}
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (index <= activeIndex) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.55f),
+                    )
+                }
             }
         }
     }

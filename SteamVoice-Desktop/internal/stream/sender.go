@@ -15,20 +15,22 @@ const bitrateStep = 16000
 const connectRequestInterval = 1500 * time.Millisecond
 
 type Sender struct {
-	conn         *net.UDPConn
-	session, seq uint32
-	bitrate      uint32
-	frameMs      uint16
-	mu           sync.Mutex
-	feedbackDone chan struct{}
-	closeOnce    sync.Once
-	feedbackWG   sync.WaitGroup
-	onBitrate    func(int)
-	onFeedback   func(protocol.ReceiverFeedback)
-	lastFeedback time.Time
-	connResult   chan protocol.ConnControl
-	created      time.Time
-	now          func() uint64
+	conn          *net.UDPConn
+	session, seq  uint32
+	bitrate       uint32
+	frameMs       uint16
+	mu            sync.Mutex
+	feedbackDone  chan struct{}
+	closeOnce     sync.Once
+	feedbackWG    sync.WaitGroup
+	onBitrate     func(int)
+	onFeedback    func(protocol.ReceiverFeedback)
+	lastFeedback  time.Time
+	connResult    chan protocol.ConnControl
+	created       time.Time
+	now           func() uint64
+	heartbeatSeq  uint32
+	lastHeartbeat time.Time
 }
 
 func NewSender(address string, args ...int) (*Sender, error) {
@@ -54,7 +56,8 @@ func NewSender(address string, args ...int) (*Sender, error) {
 		_ = c.Close()
 		return nil, fmt.Errorf("unsupported frame duration: %d ms", frameMs)
 	}
-	s := &Sender{conn: c, session: binary.BigEndian.Uint32(raw[:]), bitrate: uint32(br), frameMs: uint16(frameMs), feedbackDone: make(chan struct{}), lastFeedback: time.Now(), connResult: make(chan protocol.ConnControl, 1), created: time.Now()}
+	now := time.Now()
+	s := &Sender{conn: c, session: binary.BigEndian.Uint32(raw[:]), bitrate: uint32(br), frameMs: uint16(frameMs), feedbackDone: make(chan struct{}), lastFeedback: now, lastHeartbeat: now, connResult: make(chan protocol.ConnControl, 1), created: now}
 	s.feedbackWG.Add(1)
 	go s.feedbackLoop()
 	return s, nil
@@ -105,12 +108,6 @@ func (s *Sender) SendSettings(settings protocol.Settings) error {
 	_, err := s.conn.Write(protocol.EncodeSettings(settings))
 	return err
 }
-func (s *Sender) SendNTPServer(server string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, err := s.conn.Write(protocol.EncodeNTPServer(server))
-	return err
-}
 
 // RequestConnection asks the receiver for permission to stream, retransmitting
 // the request until it answers or the timeout elapses. A cached answer that
@@ -146,6 +143,11 @@ func (s *Sender) feedbackLoop() {
 	buf := make([]byte, 256)
 	lowSince := time.Time{}
 	for {
+		if time.Since(s.lastHeartbeat) >= time.Duration(protocol.HeartbeatIntervalMs)*time.Millisecond {
+			s.lastHeartbeat = time.Now()
+			_, _ = s.conn.Write(protocol.EncodeHeartbeat(protocol.Heartbeat{Kind: protocol.HeartbeatPing, Session: s.session, Sequence: s.heartbeatSeq, TimestampNs: s.clockNow()}))
+			s.heartbeatSeq++
+		}
 		s.conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
 		n, _, err := s.conn.ReadFromUDP(buf)
 		if err != nil {
@@ -167,6 +169,18 @@ func (s *Sender) feedbackLoop() {
 			t2 := s.clockNow()
 			resp := protocol.EncodeTimeSync(protocol.TimeSync{Kind: protocol.TimeSyncResponse, T1: ts.T1, T2: t2, T3: s.clockNow()})
 			_, _ = s.conn.Write(resp)
+			continue
+		}
+		if hb, err := protocol.DecodeHeartbeat(buf[:n]); err == nil {
+			if hb.Session != s.session {
+				continue
+			}
+			if hb.Kind == protocol.HeartbeatPing {
+				_, _ = s.conn.Write(protocol.EncodeHeartbeat(protocol.Heartbeat{Kind: protocol.HeartbeatPong, Session: hb.Session, Sequence: hb.Sequence, TimestampNs: s.clockNow()}))
+			}
+			s.mu.Lock()
+			s.lastFeedback = time.Now()
+			s.mu.Unlock()
 			continue
 		}
 		f, err := protocol.DecodeFeedback(buf[:n])
@@ -230,18 +244,6 @@ func (s *Sender) SendOpus(tsNs uint64, opus []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b, e := protocol.Encode(protocol.Header{Codec: protocol.CodecOpus, Bitrate: s.bitrate, Session: s.session, Sequence: s.seq, FrameMilliseconds: s.frameMs, Flags: protocol.FlagFEC | protocol.FlagDTX, TimestampNs: tsNs}, opus)
-	if e == nil {
-		_, e = s.conn.Write(b)
-		s.seq++
-	}
-	return e
-}
-
-// SendPCM is retained only for tests and is not used by the application path.
-func (s *Sender) SendPCM(pcm []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	b, e := protocol.Encode(protocol.Header{Codec: protocol.CodecPCM, Bitrate: s.bitrate, Session: s.session, Sequence: s.seq, FrameMilliseconds: s.frameMs}, pcm)
 	if e == nil {
 		_, e = s.conn.Write(b)
 		s.seq++
