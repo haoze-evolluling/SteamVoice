@@ -75,10 +75,7 @@ class AudioReceiverService : Service() {
         stopRequested = true
         activePc?.let { pc ->
             // 让电脑端立即断开会话，而不是等反馈超时。
-            try {
-                val bye = ConnControl(ConnControl.KIND_BYE, selfIdBlocking(), nonce = pc.nonce).encode()
-                socket?.send(DatagramPacket(bye, bye.size, pc.address, SteamVoiceProtocol.desktopControlPort))
-            } catch (_: Exception) {}
+            sendBye(pc)
         }
         ConnectionBus.activePc.value = null
         updatePlaybackState(false)
@@ -231,10 +228,12 @@ class AudioReceiverService : Service() {
                 while (true) {
                     val disconnectId = ConnectionBus.localDisconnects.poll() ?: break
                     if (activePc?.deviceId == disconnectId) {
+                        val gone = activePc
                         activePc = null
                         ConnectionBus.activePc.value = null
                         updatePlaybackState(false)
                         updateForegroundNotification(null)
+                        gone?.let(::sendBye)
                     }
                 }
                 expirePrompts()
@@ -259,12 +258,7 @@ class AudioReceiverService : Service() {
                         updatePlaybackState(false)
                         updateForegroundNotification(null)
                         // 通知电脑端立即 teardown，避免两端连接状态不一致。
-                        gone?.let { pc ->
-                            runCatching {
-                                val bye = ConnControl(ConnControl.KIND_BYE, selfIdBlocking(), nonce = pc.nonce).encode()
-                                socket?.send(DatagramPacket(bye, bye.size, pc.address, SteamVoiceProtocol.desktopControlPort))
-                            }
-                        }
+                        gone?.let(::sendBye)
                         ConnectionBus.notify(R.string.msg_connection_interrupted, gone?.name ?: LocaleManager.wrap(this).getString(R.string.generic_pc))
                     }
                     if (activePc != null && System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate, currentSyncState(), clockSync.relativeOffsetMs()?.toInt() ?: 0, clockSync.lastRttMs()?.toInt() ?: 0); lastFeedback = System.nanoTime() }
@@ -431,6 +425,16 @@ class AudioReceiverService : Service() {
         ConnectionBus.activePc.value = pc
         updateForegroundNotification(pc.name)
         ConnectionBus.notify(R.string.msg_connected, pc.name)
+    }
+
+    /** The service owns the active session, so it is the only safe place to attach its nonce. */
+    private fun sendBye(pc: ActivePc) {
+        runCatching {
+            val bye = ConnControl(ConnControl.KIND_BYE, selfIdBlocking(), nonce = pc.nonce).encode()
+            repeat(3) {
+                socket?.send(DatagramPacket(bye, bye.size, pc.address, SteamVoiceProtocol.desktopControlPort))
+            }
+        }
     }
 
     private fun respondConn(address: InetAddress, port: Int, allow: Boolean, nonce: Long) {

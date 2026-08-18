@@ -186,9 +186,7 @@ class MainActivity : ComponentActivity() {
 
     private fun disconnectFromPc(pc: PcDevice) {
         if (selfId.isEmpty()) return
-        val requestId = selfId
         ConnectionBus.localDisconnects.add(pc.deviceId)
-        Thread { connector.bye(pc, requestId) }.start()
     }
 }
 
