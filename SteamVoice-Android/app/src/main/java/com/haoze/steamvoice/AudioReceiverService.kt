@@ -198,6 +198,13 @@ class AudioReceiverService : Service() {
             // alone, and never use port 0 as a wildcard.
             return pc.port != 0 && pc.address == address && pc.port == port
         }
+        fun fromActivePeer(address: InetAddress, port: Int): Boolean {
+            // Peer calibration probes use the other receiver's ephemeral
+            // socket, so their source port is deliberately not the peer
+            // receiver's fixed service port. The prior SVAC handshake has
+            // already authenticated the peer address for this operation.
+            return lastPeerAddress == address
+        }
         fun publishPeer(deviceId: String, state: PeerCalibrationState) {
             ConnectionBus.peerCalibration.value = ConnectionBus.peerCalibration.value + (deviceId to state)
         }
@@ -398,7 +405,7 @@ class AudioReceiverService : Service() {
                 }
                 val timeSync = TimeSyncControl.decode(datagram.data, datagram.length)
                 if (timeSync != null) {
-                    if (!fromActivePc(datagram.address, datagram.port)) continue
+                    if (!fromActivePc(datagram.address, datagram.port) && !fromActivePeer(datagram.address, datagram.port)) continue
                     if (timeSync.kind == TimeSyncControl.KIND_REQUEST) {
                         val t2 = System.nanoTime()
                         val response = TimeSyncControl(TimeSyncControl.KIND_RESPONSE, timeSync.t1, t2, System.nanoTime()).encode()
