@@ -28,11 +28,9 @@ class AudioReceiverService : Service() {
     private companion object {
         const val TAG = "SteamVoiceReceiver"; const val MAX_UDP_PACKET = 65535
         const val AUTH_NOTIFICATION_ID = 9
-        const val PEER_CALIBRATION_NOTIFICATION_ID = 10
         const val PROMPT_EXPIRY_MS = 35_000L
         const val HEARTBEAT_TIMEOUT_NS = 3_500_000_000L
         const val ACTION_RESPOND = "com.haoze.steamvoice.action.RESPOND"
-        const val ACTION_PEER_CALIBRATION_RESPOND = "com.haoze.steamvoice.action.PEER_CALIBRATION_RESPOND"
         const val EXTRA_REQUEST_ID = "request_id"; const val EXTRA_ALLOW = "allow"; const val EXTRA_REMEMBER = "remember"
         fun timeSyncIntervalNs(hasEstimate: Boolean): Long = if (hasEstimate) 2_000_000_000L else 250_000_000L
     }
@@ -55,7 +53,6 @@ class AudioReceiverService : Service() {
     @Volatile private var lastPeerPort = 0
     @Volatile private var pendingPeerAddress: InetAddress? = null
     @Volatile private var pendingPeerPort = 0
-    @Volatile private var peerPromptStartedNs = 0L
 
     /** 仅在接收线程访问：等待用户决定的连接请求。 */
     private class PromptRecord(val prompt: PcAuthPrompt, val address: InetAddress, val port: Int, val nonce: Long)
@@ -69,10 +66,6 @@ class AudioReceiverService : Service() {
                 val allow = intent.getBooleanExtra(EXTRA_ALLOW, false)
                 val remember = intent.getBooleanExtra(EXTRA_REMEMBER, false)
                 if (requestId.isNotEmpty()) ConnectionBus.decisions.add(Triple(requestId, allow, remember))
-            }
-            ACTION_PEER_CALIBRATION_RESPOND -> {
-                val operation = intent.getLongExtra("peer_operation", 0L)
-                if (operation != 0L) ConnectionBus.peerCalibrationDecisions.add(operation to intent.getBooleanExtra(EXTRA_ALLOW, false))
             }
         }
         Log.i(TAG, "receiver service starting port=${SteamVoiceProtocol.port}")
@@ -100,12 +93,10 @@ class AudioReceiverService : Service() {
         ConnectionBus.authPrompt.value = null
         ConnectionBus.calibration.value = null
         ConnectionBus.peerCalibration.value = emptyMap()
-        ConnectionBus.peerCalibrationPrompts.value = null
         socket?.close()
         worker?.interrupt()
         registration?.let { nsd?.unregisterService(it) }
         dismissAuthNotification()
-        getSystemService(NotificationManager::class.java).cancel(PEER_CALIBRATION_NOTIFICATION_ID)
         mediaSession?.release()
         mediaSession = null
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -210,7 +201,7 @@ class AudioReceiverService : Service() {
         }
         fun clearPeerOperation() {
             peerOperation = 0L; peerOperationStartedNs = 0L; peerTargetLocalNs = 0L; peerResetRequested = false
-            peerDeviceId = ""; peerOffsetMs = null; peerRttMs = null; pendingPeerAddress = null; pendingPeerPort = 0; peerPromptStartedNs = 0L
+            peerDeviceId = ""; peerOffsetMs = null; peerRttMs = null; pendingPeerAddress = null; pendingPeerPort = 0
         }
         // 反馈的队列值表示超出同步预算的多余积压，而非总缓冲：
         // 桌面端以 queue>1 为拥塞信号，直接上报总缓冲会被误判持续降码率。
@@ -282,29 +273,9 @@ class AudioReceiverService : Service() {
                     runCatching { socket?.send(DatagramPacket(request, request.size, InetAddress.getByName(peer.host), peer.port)) }
                         .onFailure { publishPeer(peer.deviceId, PeerCalibrationState(PeerCalibrationPhase.FAILED)); clearPeerOperation() }
                 }
-                while (true) {
-                    val decision = ConnectionBus.peerCalibrationDecisions.poll() ?: break
-                    val prompt = ConnectionBus.peerCalibrationPrompts.value
-                    if (prompt == null || prompt.operation != decision.first) continue
-                    val pc = activePc
-                    val kind = if (decision.second && pc?.deviceId == prompt.pcId) PeerCalibrationControl.ACCEPT else PeerCalibrationControl.REJECT
-                    val response = PeerCalibrationControl(kind, prompt.operation, selfIdBlocking(), prompt.pcId).encode()
-                    runCatching { socket?.send(DatagramPacket(response, response.size, prompt.address, prompt.port)) }
-                    if (kind == PeerCalibrationControl.ACCEPT) { lastPeerAddress = prompt.address; lastPeerPort = prompt.port }
-                    publishPeer(prompt.deviceId, PeerCalibrationState(if (kind == PeerCalibrationControl.ACCEPT) PeerCalibrationPhase.MEASURING else PeerCalibrationPhase.FAILED))
-                    ConnectionBus.peerCalibrationPrompts.value = null
-                    peerPromptStartedNs = 0L
-                    getSystemService(NotificationManager::class.java).cancel(PEER_CALIBRATION_NOTIFICATION_ID)
-                }
                 if (peerOperation != 0L && peerTargetLocalNs != 0L && System.nanoTime() >= peerTargetLocalNs) peerResetRequested = true
                 if (peerOperation != 0L && peerOperationStartedNs != 0L && System.nanoTime() - peerOperationStartedNs > 12_000_000_000L) {
                     publishPeer(peerDeviceId, PeerCalibrationState(PeerCalibrationPhase.FAILED)); clearPeerOperation()
-                }
-                if (ConnectionBus.peerCalibrationPrompts.value != null && peerPromptStartedNs != 0L && System.nanoTime() - peerPromptStartedNs > 35_000_000_000L) {
-                    val prompt = ConnectionBus.peerCalibrationPrompts.value
-                    if (prompt != null) publishPeer(prompt.deviceId, PeerCalibrationState(PeerCalibrationPhase.FAILED))
-                    ConnectionBus.peerCalibrationPrompts.value = null
-                    getSystemService(NotificationManager::class.java).cancel(PEER_CALIBRATION_NOTIFICATION_ID)
                 }
                 // 处理用户主动断开。
                 while (true) {
@@ -579,15 +550,20 @@ class AudioReceiverService : Service() {
         val pc = activePc ?: return
         when (control.kind) {
             PeerCalibrationControl.REQUEST -> {
-                if (control.pcId != pc.deviceId || ConnectionBus.peerCalibrationPrompts.value != null) {
+                if (!acceptsPeerCalibrationRequest(control.pcId, pc.deviceId, peerOperation)) {
                     val reject = PeerCalibrationControl(PeerCalibrationControl.REJECT, control.operation, selfIdBlocking(), control.pcId).encode()
                     runCatching { socket?.send(DatagramPacket(reject, reject.size, datagram.address, datagram.port)) }
                     return
                 }
-                ConnectionBus.peerCalibrationPrompts.value = PeerCalibrationPrompt(control.operation, control.deviceId, control.pcId, datagram.address, datagram.port)
-                peerPromptStartedNs = System.nanoTime()
-                publish(control.deviceId, PeerCalibrationState(PeerCalibrationPhase.AWAITING_CONFIRMATION))
-                postPeerCalibrationNotification(control)
+                peerOperation = control.operation
+                peerOperationStartedNs = System.nanoTime()
+                peerDeviceId = control.deviceId
+                lastPeerAddress = datagram.address
+                lastPeerPort = datagram.port
+                publish(control.deviceId, PeerCalibrationState(PeerCalibrationPhase.MEASURING))
+                val accept = PeerCalibrationControl(PeerCalibrationControl.ACCEPT, control.operation, selfIdBlocking(), control.pcId).encode()
+                runCatching { socket?.send(DatagramPacket(accept, accept.size, datagram.address, datagram.port)) }
+                    .onFailure { publish(control.deviceId, PeerCalibrationState(PeerCalibrationPhase.FAILED)); clear() }
             }
             PeerCalibrationControl.ACCEPT -> {
                 if (control.operation != peerOperation || control.deviceId != peerDeviceId || control.pcId != pc.deviceId || datagram.address != pendingPeerAddress || datagram.port != pendingPeerPort) return
@@ -613,10 +589,8 @@ class AudioReceiverService : Service() {
                 publish(peerDeviceId, PeerCalibrationState(PeerCalibrationPhase.FAILED)); clear()
             }
             PeerCalibrationControl.COMMIT -> {
-                if (control.pcId != pc.deviceId) return
-                peerOperation = control.operation; peerDeviceId = control.deviceId
+                if (control.pcId != pc.deviceId || control.operation != peerOperation || control.deviceId != peerDeviceId || datagram.address != lastPeerAddress || datagram.port != lastPeerPort) return
                 peerTargetLocalNs = control.targetNs; peerOffsetMs = -control.offsetNs / 1_000_000L; peerRttMs = control.rttMs
-                lastPeerAddress = datagram.address; lastPeerPort = datagram.port
                 publish(peerDeviceId, PeerCalibrationState(PeerCalibrationPhase.WAITING_TARGET, peerOffsetMs, peerRttMs))
             }
             PeerCalibrationControl.COMPLETE -> if (control.operation == peerOperation && control.deviceId == peerDeviceId) {
@@ -624,22 +598,6 @@ class AudioReceiverService : Service() {
             }
         }
     }
-
-    private fun postPeerCalibrationNotification(control: PeerCalibrationControl) {
-        val allow = peerCalibrationIntent(control.operation, true)
-        val reject = peerCalibrationIntent(control.operation, false)
-        val notification = NotificationCompat.Builder(this, "steamvoice-receiver")
-            .setSmallIcon(R.mipmap.ic_launcher).setContentTitle(getString(R.string.app_name))
-            .setContentText(getString(R.string.android_sync_confirm, control.deviceId.take(8))).setAutoCancel(true)
-            .addAction(0, getString(R.string.auth_allow), allow).addAction(0, getString(R.string.auth_deny), reject).build()
-        getSystemService(NotificationManager::class.java).notify(PEER_CALIBRATION_NOTIFICATION_ID, notification)
-    }
-
-    private fun peerCalibrationIntent(operation: Long, allow: Boolean): PendingIntent = PendingIntent.getService(
-        this, (operation xor if (allow) 1 else 0).toInt(),
-        Intent(this, AudioReceiverService::class.java).setAction(ACTION_PEER_CALIBRATION_RESPOND).putExtra("peer_operation", operation).putExtra(EXTRA_ALLOW, allow),
-        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-    )
 
     /** The service owns the active session, so it is the only safe place to attach its nonce. */
     private fun sendBye(pc: ActivePc) {

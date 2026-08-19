@@ -15,8 +15,6 @@
     <string name="android_sync_result">播放已对齐 · 往返 %1$d ms</string>
     <string name="android_sync_complete">两台设备已重新同步</string>
     <string name="android_sync_action">校正时间</string>
-    <string name="android_sync_confirm_title">附近设备请求校时</string>
-    <string name="android_sync_confirm">设备 %1$s 请求校时并重置播放缓冲</string>
     <plurals name="device_count">
         <item quantity="other">%1$d 台</item>
     </plurals>

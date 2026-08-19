@@ -198,7 +198,6 @@ private fun ReceiverScreen(
     val androidDevices by discovery.androidDevices.collectAsState()
     val activePc by ConnectionBus.activePc.collectAsState()
     val authPrompt by ConnectionBus.authPrompt.collectAsState()
-    val peerPrompt by ConnectionBus.peerCalibrationPrompts.collectAsState()
     val calibration by ConnectionBus.calibration.collectAsState()
     val pcStates = remember { mutableStateMapOf<String, PcConnectionState>() }
     val peerCalibration by ConnectionBus.peerCalibration.collectAsState()
@@ -329,15 +328,6 @@ private fun ReceiverScreen(
             onRespond = { allow, remember ->
                 ConnectionBus.decisions.add(Triple(prompt.requestId, allow, remember))
             },
-        )
-    }
-    peerPrompt?.let { prompt ->
-        AlertDialog(
-            onDismissRequest = { ConnectionBus.peerCalibrationDecisions.add(prompt.operation to false) },
-            title = { Text(stringResource(R.string.android_sync_confirm_title)) },
-            text = { Text(stringResource(R.string.android_sync_confirm, prompt.deviceId.take(8))) },
-            confirmButton = { TextButton(onClick = { ConnectionBus.peerCalibrationDecisions.add(prompt.operation to true) }) { Text(stringResource(R.string.auth_allow)) } },
-            dismissButton = { TextButton(onClick = { ConnectionBus.peerCalibrationDecisions.add(prompt.operation to false) }) { Text(stringResource(R.string.auth_deny)) } },
         )
     }
 }
@@ -581,7 +571,7 @@ private fun AndroidDeviceCard(device: AndroidDevice, state: PeerCalibrationState
                 Text(device.host, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 when (state.phase) {
                     PeerCalibrationPhase.IDLE -> Text(stringResource(R.string.android_sync_ready), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    PeerCalibrationPhase.REQUESTING, PeerCalibrationPhase.AWAITING_CONFIRMATION, PeerCalibrationPhase.MEASURING, PeerCalibrationPhase.WAITING_TARGET -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) { CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp); Text(stringResource(R.string.android_sync_running), style = MaterialTheme.typography.labelMedium) }
+                    PeerCalibrationPhase.REQUESTING, PeerCalibrationPhase.MEASURING, PeerCalibrationPhase.WAITING_TARGET -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) { CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp); Text(stringResource(R.string.android_sync_running), style = MaterialTheme.typography.labelMedium) }
                     PeerCalibrationPhase.FAILED -> Text(stringResource(R.string.android_sync_failed), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
                     PeerCalibrationPhase.COMPLETE -> Text(
                         if (state.rttMs != null) stringResource(R.string.android_sync_result, state.rttMs)
@@ -591,7 +581,22 @@ private fun AndroidDeviceCard(device: AndroidDevice, state: PeerCalibrationState
                     )
                 }
             }
-            if (state.phase == PeerCalibrationPhase.IDLE || state.phase == PeerCalibrationPhase.COMPLETE || state.phase == PeerCalibrationPhase.FAILED) Button(onClick = onSync, enabled = canStart) { Text(stringResource(R.string.android_sync_action)) }
+            val calibrating = state.phase in setOf(
+                PeerCalibrationPhase.REQUESTING,
+                PeerCalibrationPhase.MEASURING,
+                PeerCalibrationPhase.WAITING_TARGET,
+            )
+            Button(onClick = onSync, enabled = canStart && !calibrating) {
+                if (calibrating) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(stringResource(R.string.android_sync_action))
+            }
         }
     }
 }

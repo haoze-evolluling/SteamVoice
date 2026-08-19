@@ -40,7 +40,7 @@ data class CalibrationState(
     val rttMs: Long? = null,
 )
 
-enum class PeerCalibrationPhase { IDLE, REQUESTING, AWAITING_CONFIRMATION, MEASURING, WAITING_TARGET, COMPLETE, FAILED }
+enum class PeerCalibrationPhase { IDLE, REQUESTING, MEASURING, WAITING_TARGET, COMPLETE, FAILED }
 
 data class PeerCalibrationState(
     val phase: PeerCalibrationPhase = PeerCalibrationPhase.IDLE,
@@ -49,7 +49,8 @@ data class PeerCalibrationState(
     val rttMs: Long? = null,
 )
 
-data class PeerCalibrationPrompt(val operation: Long, val deviceId: String, val pcId: String, val address: InetAddress, val port: Int)
+internal fun acceptsPeerCalibrationRequest(requestPcId: String, activePcId: String, activeOperation: Long): Boolean =
+    requestPcId == activePcId && activeOperation == 0L
 
 /**
  * UI、连接器与接收服务之间的进程内状态总线。
@@ -63,8 +64,6 @@ object ConnectionBus {
     val calibration = MutableStateFlow<CalibrationState?>(null)
     val peerCalibration = MutableStateFlow<Map<String, PeerCalibrationState>>(emptyMap())
     val peerCalibrationRequests = ConcurrentLinkedQueue<AndroidDevice>()
-    val peerCalibrationPrompts = MutableStateFlow<PeerCalibrationPrompt?>(null)
-    val peerCalibrationDecisions = ConcurrentLinkedQueue<Pair<Long, Boolean>>()
     /** Authoritative transport state per stable peer ID. */
     val states = ConcurrentHashMap<String, MutableStateFlow<ConnectionState>>()
     val messages = MutableSharedFlow<UiMessage>(extraBufferCapacity = 8)
