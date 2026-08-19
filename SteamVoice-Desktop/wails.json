@@ -3,7 +3,7 @@
   "name": "SteamVoice",
   "outputfilename": "SteamVoice",
   "info": {
-    "productVersion": "1.2.0"
+    "productVersion": "2.0.0"
   },
   "frontend:dir": "frontend",
   "frontend:install": "npm install",
