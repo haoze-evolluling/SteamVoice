@@ -191,6 +191,13 @@ class AudioReceiverService : Service() {
         fun offerToPlayer(pcm: ByteArray, tsNs: Long) {
             if (!player.offer(pcm, tsNs)) playerOverflow++
         }
+        fun fromActivePc(address: InetAddress, port: Int): Boolean {
+            val pc = activePc ?: return false
+            // The sender's ephemeral port is learned from its authenticated
+            // SVCR request. Never accept control traffic from the mDNS address
+            // alone, and never use port 0 as a wildcard.
+            return pc.port != 0 && pc.address == address && pc.port == port
+        }
         fun publishPeer(deviceId: String, state: PeerCalibrationState) {
             ConnectionBus.peerCalibration.value = ConnectionBus.peerCalibration.value + (deviceId to state)
         }
@@ -302,6 +309,7 @@ class AudioReceiverService : Service() {
                         updatePlaybackState(false)
                         updateForegroundNotification(null)
                         gone?.let(::sendBye)
+                        ConnectionBus.transition(disconnectId, ConnectionEvent.LOCAL_DISCONNECT)
                     }
                 }
                 expirePrompts()
@@ -342,6 +350,7 @@ class AudioReceiverService : Service() {
                         updateForegroundNotification(null)
                         // 通知电脑端立即 teardown，避免两端连接状态不一致。
                         gone?.let(::sendBye)
+                        gone?.let { ConnectionBus.transition(it.deviceId, ConnectionEvent.HEARTBEAT_TIMEOUT) }
                         ConnectionBus.notify(R.string.msg_connection_interrupted, gone?.name ?: LocaleManager.wrap(this).getString(R.string.generic_pc))
                     }
                     if (activePc != null && System.nanoTime() - lastFeedback > 200_000_000L) { sendFeedback(lastAddress, lastPort, activeSession, highest, receivedCount, lostCount, queueExcess(), actualBitrate, currentSyncState(), clockSync.relativeOffsetMs()?.toInt() ?: 0, clockSync.lastRttMs()?.toInt() ?: 0); lastFeedback = System.nanoTime() }
@@ -362,18 +371,19 @@ class AudioReceiverService : Service() {
                     clearPeerOperation()
                 }
                 val control = SettingsControl.decode(datagram.data, datagram.length)
-                if (control != null) {
+                if (control != null && fromActivePc(datagram.address, datagram.port)) {
                     val incoming = AudioSettings(control.bitrateKbps, control.frameMs, control.updatedAtMs, control.deviceId)
                     if (runBlocking { repository.applyIfNewer(incoming) }) settings = incoming
                     continue
                 }
                 val heartbeat = HeartbeatControl.decode(datagram.data, datagram.length)
                 if (heartbeat != null) {
-                    if (activePc != null && (activeSession == 0L || heartbeat.session == activeSession)) {
+                    val fromPc = fromActivePc(datagram.address, datagram.port)
+                    if (fromPc && (activeSession == 0L || heartbeat.session == activeSession)) {
                         if (activeSession == 0L) activeSession = heartbeat.session
                         lastHeartbeatNs = System.nanoTime()
                     }
-                    if (heartbeat.kind == HeartbeatControl.KIND_PING) {
+                    if (fromPc && heartbeat.kind == HeartbeatControl.KIND_PING) {
                         val pong = HeartbeatControl(HeartbeatControl.KIND_PONG, heartbeat.session, heartbeat.sequence, System.nanoTime()).encode()
                         runCatching { socket?.send(DatagramPacket(pong, pong.size, datagram.address, datagram.port)) }
                     }
@@ -388,6 +398,7 @@ class AudioReceiverService : Service() {
                 }
                 val timeSync = TimeSyncControl.decode(datagram.data, datagram.length)
                 if (timeSync != null) {
+                    if (!fromActivePc(datagram.address, datagram.port)) continue
                     if (timeSync.kind == TimeSyncControl.KIND_REQUEST) {
                         val t2 = System.nanoTime()
                         val response = TimeSyncControl(TimeSyncControl.KIND_RESPONSE, timeSync.t1, t2, System.nanoTime()).encode()
@@ -403,8 +414,7 @@ class AudioReceiverService : Service() {
                 // mDNS, but the desktop may send from another interface. The
                 // control handshake already authorized this peer; bind the
                 // actual source address on its first audio packet.
-                val authorized = activePc != null &&
-                    (lastAddress == null || datagram.address == activePc!!.address || activePc!!.port == 0)
+                val authorized = fromActivePc(datagram.address, datagram.port)
                 if (!authorized) { unauthorizedDrops++; if (unauthorizedDrops % 100 == 1L) Log.w(TAG, "dropping audio from unauthorized ${datagram.address} (total=$unauthorizedDrops)"); continue }
                 val packet = SteamVoiceProtocol.decode(datagram.data, datagram.length)
                 if (packet == null) { Log.w(TAG, "invalid UDP packet length=${datagram.length}"); continue }
@@ -474,6 +484,18 @@ class AudioReceiverService : Service() {
     private fun handleConnControl(conn: ConnControl, datagram: DatagramPacket, trust: PcTrustRepository) {
         when (conn.kind) {
             ConnControl.KIND_REQUEST -> {
+                val current = activePc
+                if (current != null && current.deviceId != conn.deviceId) {
+                    // A second PC cannot replace a live session implicitly.
+                    respondConn(datagram.address, datagram.port, allow = false, nonce = conn.nonce)
+                    ConnectionBus.transition(conn.deviceId, ConnectionEvent.DENIED)
+                    return
+                }
+                val duplicate = pendingPrompts.values.firstOrNull {
+                    it.prompt.deviceId == conn.deviceId && it.nonce == conn.nonce &&
+                        it.address == datagram.address && it.port == datagram.port
+                }
+                if (duplicate != null) return
                 val name = conn.name.ifBlank { conn.deviceId.take(8) }
                 val trusted = runBlocking { trust.isTrusted(conn.deviceId) }
                 if (activePc?.deviceId == conn.deviceId || trusted) {
@@ -499,6 +521,7 @@ class AudioReceiverService : Service() {
                     peerResetRequested = false
                     ConnectionBus.peerCalibration.value = emptyMap()
                     ConnectionBus.notify(R.string.msg_disconnected, gone?.name ?: LocaleManager.wrap(this).getString(R.string.generic_pc))
+                    ConnectionBus.transition(conn.deviceId, ConnectionEvent.REMOTE_BYE)
                 }
             }
             ConnControl.KIND_RESPONSE -> {} // 响应发给发起连接的临时 socket，不会到这里
@@ -534,6 +557,8 @@ class AudioReceiverService : Service() {
     private fun adoptPc(pc: ActivePc) {
         activePc = pc
         ConnectionBus.activePc.value = pc
+        ConnectionBus.transition(pc.deviceId, ConnectionEvent.REQUEST_RECEIVED)
+        ConnectionBus.transition(pc.deviceId, ConnectionEvent.AUTHORIZED)
         updateForegroundNotification(pc.name)
         ConnectionBus.notify(R.string.msg_connected, pc.name)
     }

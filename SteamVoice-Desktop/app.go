@@ -158,6 +158,7 @@ type App struct {
 	listener        *gateway.Listener
 	pending         map[string]*pendingRequest
 	pendingByDevice map[string]string
+	connecting      map[string]bool
 	localBitrate    int
 	localFrameMs    int
 	clockAnchor     time.Time
@@ -195,7 +196,7 @@ func NewApp() *App {
 // NewAppWithStore wires an explicit identity/trust store; tests use it to
 // avoid touching the real config file.
 func NewAppWithStore(store *config.File) *App {
-	return &App{sessions: map[string]*deviceSession{}, staleAfter: feedbackStaleAfter, dropAfter: feedbackDropAfter, requestTimeout: requestExpiry, pending: map[string]*pendingRequest{}, pendingByDevice: map[string]string{}, localBitrate: 128000, localFrameMs: 10, store: store}
+	return &App{sessions: map[string]*deviceSession{}, staleAfter: feedbackStaleAfter, dropAfter: feedbackDropAfter, requestTimeout: requestExpiry, pending: map[string]*pendingRequest{}, pendingByDevice: map[string]string{}, connecting: map[string]bool{}, localBitrate: 128000, localFrameMs: 10, store: store}
 }
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
@@ -279,6 +280,21 @@ func (a *App) DiscoverDevices() ([]Device, error) {
 // adaptation keeps working. Reconnecting an already-connected device replaces
 // its session.
 func (a *App) Connect(device Device) error {
+	a.mu.Lock()
+	if a.connecting == nil {
+		a.connecting = map[string]bool{}
+	}
+	if a.connecting[device.ID] {
+		a.mu.Unlock()
+		return svErr("err_connecting", device.ID)
+	}
+	a.connecting[device.ID] = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		delete(a.connecting, device.ID)
+		a.mu.Unlock()
+	}()
 	bitrate := device.Bitrate
 	if bitrate == 0 {
 		bitrate = 128000
