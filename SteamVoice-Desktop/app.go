@@ -64,6 +64,9 @@ type DeviceStatus struct {
 	FrameMs   int
 	// Phase mirrors the receiver's calibration progress (0-3) for UI restore.
 	Phase int
+	// ChannelRoute controls which audio channels are sent to this receiver:
+	// "stereo" (default), "left", or "right".
+	ChannelRoute string
 }
 
 // CalibrationProgress reports one receiver's multi-device sync status as it
@@ -129,6 +132,9 @@ type deviceSession struct {
 	encoder *codec.OpusEncoder
 	stale   bool
 	status  DeviceStatus
+	// channelRoute controls which channels of the stereo PCM are forwarded:
+	// "stereo" (default), "left", or "right". Protected by App.mu.
+	channelRoute string
 	// calib tracks the receiver-reported sync phase plus the last pushed
 	// clock readout, throttling calibration:progress events.
 	calib        int
@@ -346,7 +352,7 @@ func (a *App) Connect(device Device) error {
 		_ = sender.Close()
 		return svErr("err_opus_init", err.Error())
 	}
-	session := &deviceSession{device: device, sender: sender, encoder: encoder, status: DeviceStatus{DeviceID: device.ID, Name: device.Name, Connected: true, Message: svMsg("streaming"), Bitrate: bitrate, FrameMs: frameMs, Phase: 0}}
+	session := &deviceSession{device: device, sender: sender, encoder: encoder, channelRoute: "stereo", status: DeviceStatus{DeviceID: device.ID, Name: device.Name, Connected: true, Message: svMsg("streaming"), Bitrate: bitrate, FrameMs: frameMs, Phase: 0, ChannelRoute: "stereo"}}
 	sender.SetFeedbackCallback(func(f protocol.ReceiverFeedback) {
 		if f.SyncState == protocol.SyncUnknown {
 			return
@@ -528,6 +534,34 @@ func (a *App) SaveLocalSettings(bitrate int, frameMs int) {
 	a.mu.Unlock()
 }
 
+// SetChannelRoute changes the audio channel routing for an active session.
+// route must be "stereo", "left", or "right"; any other value is rejected.
+// The change takes effect on the very next PCM frame — no reconnection needed.
+func (a *App) SetChannelRoute(deviceID string, route string) error {
+	if route != "stereo" && route != "left" && route != "right" {
+		return svErr("err_channel_route", route)
+	}
+	a.mu.Lock()
+	s, ok := a.sessions[deviceID]
+	if ok {
+		s.channelRoute = route
+		s.status.ChannelRoute = route
+	}
+	var status DeviceStatus
+	if ok {
+		status = s.status
+	}
+	ctx := a.ctx
+	a.mu.Unlock()
+	if !ok {
+		return svErr("err_not_connected", deviceID)
+	}
+	if ctx != nil {
+		runtime.EventsEmit(ctx, "stream:status", status)
+	}
+	return nil
+}
+
 // RespondConnection answers a pending inbound request. remember stores the
 // device so future requests are auto-accepted.
 func (a *App) RespondConnection(requestID string, allow bool, remember bool) error {
@@ -681,10 +715,13 @@ func (a *App) onPCM(pcm []byte) {
 }
 
 // sendFrame encodes and delivers one PCM frame (real or synthetic silence) to
-// every session, stamped with its stream-clock capture time.
+// every session, stamped with its stream-clock capture time. Each session may
+// have an independent channel route ("stereo", "left", "right"); the PCM is
+// filtered per-session before encoding so no shared buffers are mutated.
 func (a *App) sendFrame(sessions []*deviceSession, tsNs uint64, pcm []byte) {
 	for _, s := range sessions {
-		encoded, err := s.encoder.EncodePCM(pcm)
+		frame := filterPCM(pcm, s.channelRoute)
+		encoded, err := s.encoder.EncodePCM(frame)
 		if err == nil {
 			err = s.sender.SendOpus(tsNs, encoded)
 		}
@@ -693,6 +730,31 @@ func (a *App) sendFrame(sessions []*deviceSession, tsNs uint64, pcm []byte) {
 		}
 	}
 }
+
+// filterPCM applies a channel route to a 16-bit stereo interleaved PCM frame.
+// "left"  → duplicate left channel  into both channels (L,L)
+// "right" → duplicate right channel into both channels (R,R)
+// anything else (including "") → return pcm unchanged (stereo pass-through).
+// When routing is needed a new slice is allocated so the caller's buffer is
+// never modified; for stereo the original slice is returned directly.
+func filterPCM(pcm []byte, route string) []byte {
+	if route != "left" && route != "right" {
+		return pcm
+	}
+	out := make([]byte, len(pcm))
+	for i := 0; i+3 < len(pcm); i += 4 {
+		// Each frame step: bytes i,i+1 = left sample; i+2,i+3 = right sample.
+		if route == "left" {
+			out[i], out[i+1] = pcm[i], pcm[i+1]
+			out[i+2], out[i+3] = pcm[i], pcm[i+1]
+		} else {
+			out[i], out[i+1] = pcm[i+2], pcm[i+3]
+			out[i+2], out[i+3] = pcm[i+2], pcm[i+3]
+		}
+	}
+	return out
+}
+
 
 // keepaliveLoop bridges WASAPI loopback's silent idle periods: while sessions
 // exist but the capture device produces no data, it feeds Opus-encoded silence

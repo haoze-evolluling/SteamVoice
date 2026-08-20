@@ -2,6 +2,11 @@
 
 package codec
 
+/*
+#cgo windows LDFLAGS: -Wl,-Bstatic -lopus -Wl,-Bdynamic
+*/
+import "C"
+
 import (
 	"encoding/binary"
 	"fmt"

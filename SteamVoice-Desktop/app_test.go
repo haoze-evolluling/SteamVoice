@@ -133,3 +133,67 @@ func TestCheckStaleSessionsDropsLongSilentReceiver(t *testing.T) {
 		t.Fatalf("updated = %+v, want drop status", updated)
 	}
 }
+
+func TestFilterPCM(t *testing.T) {
+	// Sample PCM: 2 stereo frames (4 samples, 8 bytes).
+	// Frame 0: Left = 0x0102, Right = 0x0304
+	// Frame 1: Left = 0x0506, Right = 0x0708
+	raw := []byte{0x02, 0x01, 0x04, 0x03, 0x06, 0x05, 0x08, 0x07}
+
+	// Stereo pass-through returns the same slice
+	stereo := filterPCM(raw, "stereo")
+	if len(stereo) != len(raw) || &stereo[0] != &raw[0] {
+		t.Errorf("filterPCM(stereo) must return input slice pointer directly")
+	}
+
+	// Left channel routing duplicates left to both channels
+	left := filterPCM(raw, "left")
+	wantLeft := []byte{0x02, 0x01, 0x02, 0x01, 0x06, 0x05, 0x06, 0x05}
+	if string(left) != string(wantLeft) {
+		t.Errorf("filterPCM(left) = %v, want %v", left, wantLeft)
+	}
+	if &left[0] == &raw[0] {
+		t.Errorf("filterPCM(left) must return a newly allocated slice")
+	}
+
+	// Right channel routing duplicates right to both channels
+	right := filterPCM(raw, "right")
+	wantRight := []byte{0x04, 0x03, 0x04, 0x03, 0x08, 0x07, 0x08, 0x07}
+	if string(right) != string(wantRight) {
+		t.Errorf("filterPCM(right) = %v, want %v", right, wantRight)
+	}
+	if &right[0] == &raw[0] {
+		t.Errorf("filterPCM(right) must return a newly allocated slice")
+	}
+}
+
+func TestSetChannelRoute(t *testing.T) {
+	a := NewApp()
+	session := newTestSession(t, "phone-a", "Pixel")
+	a.sessions["phone-a"] = session
+
+	// Invalid route rejected
+	if err := a.SetChannelRoute("phone-a", "invalid"); err == nil {
+		t.Error("SetChannelRoute with invalid route must fail")
+	}
+
+	// Unknown device rejected
+	if err := a.SetChannelRoute("unknown-device", "left"); err == nil {
+		t.Error("SetChannelRoute with unknown device must fail")
+	}
+
+	// Valid switch to left
+	if err := a.SetChannelRoute("phone-a", "left"); err != nil {
+		t.Fatalf("SetChannelRoute to left failed: %v", err)
+	}
+	if session.channelRoute != "left" || session.status.ChannelRoute != "left" {
+		t.Errorf("session channel route = %q, status = %q, want left", session.channelRoute, session.status.ChannelRoute)
+	}
+
+	// GetStatus reflects channel route
+	status := a.GetStatus()
+	if len(status.Devices) != 1 || status.Devices[0].ChannelRoute != "left" {
+		t.Errorf("GetStatus ChannelRoute = %q, want left", status.Devices[0].ChannelRoute)
+	}
+}
+

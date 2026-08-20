@@ -46,6 +46,10 @@ export function SaveNTPServer(arg1) {
   return window['go']['main']['App']['SaveNTPServer'](arg1);
 }
 
+export function SetChannelRoute(arg1, arg2) {
+  return window['go']['main']['App']['SetChannelRoute'](arg1, arg2);
+}
+
 export function TestNTPServer() {
   return window['go']['main']['App']['TestNTPServer']();
 }

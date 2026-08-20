@@ -49,8 +49,9 @@ if errorlevel 1 (
 )
 
 set "CGO_ENABLED=1"
+set "CGO_LDFLAGS=-Wl,-Bstatic -lopus -Wl,-Bdynamic %CGO_LDFLAGS%"
 echo Building SteamVoice Windows installer...
-wails build -clean -nsis -installscope machine -tags steamvoice_opus
+wails build -clean -nsis -installscope machine -tags "steamvoice_opus nolibopusfile"
 if errorlevel 1 (
     echo [ERROR] Desktop installer build failed.
     goto :done

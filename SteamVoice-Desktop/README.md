@@ -9,7 +9,7 @@ Install a Windows C/C++ compiler (Visual Studio Build Tools with the Desktop C++
 ```powershell
 $env:CGO_ENABLED = "1"
 cd frontend; npm install; npm run build; cd ..
-wails dev -tags steamvoice_opus
+wails dev -tags "steamvoice_opus nolibopusfile"
 ```
 
 Use `build.bat` for a production Windows installer. The script generates an NSIS installer for all users, which installs SteamVoice under `Program Files` and adds normal Windows uninstall metadata. The installation requires administrator permission.

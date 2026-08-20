@@ -104,6 +104,12 @@ const messages: Record<Locale, Record<string, string>> = {
     'backend.err_control': '控制通道不可用',
     'backend.err_respond': '发送授权结果失败（{p}）',
     'backend.err_connect': '连接失败：{p}',
+    'backend.err_channel_route': '无效的声道路由：{p}',
+    'backend.err_not_connected': '设备未连接',
+    'channel.label': '声道路由',
+    'channel.stereo': '立体声',
+    'channel.left': '左声道',
+    'channel.right': '右声道',
   },
   en: {
     'header.eyebrow': 'PC audio sender',
@@ -198,6 +204,12 @@ const messages: Record<Locale, Record<string, string>> = {
     'backend.err_control': 'Control channel unavailable',
     'backend.err_respond': 'Failed to send the authorization result ({p})',
     'backend.err_connect': 'Connection failed: {p}',
+    'backend.err_channel_route': 'Invalid channel route: {p}',
+    'backend.err_not_connected': 'Device not connected',
+    'channel.label': 'Channel route',
+    'channel.stereo': 'Stereo',
+    'channel.left': 'Left',
+    'channel.right': 'Right',
   },
 };
 

@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { Connect, DiscoverDevices, Disconnect, GetStatus, GetIdentity, GetNTPSettings, ListAuthorizedDevices, RemoveAuthorizedDevice, RespondConnection, SaveLocalSettings, SaveNTPServer, TestNTPServer } from '../wailsjs/go/main/App';
+import { Connect, DiscoverDevices, Disconnect, GetStatus, GetIdentity, GetNTPSettings, ListAuthorizedDevices, RemoveAuthorizedDevice, RespondConnection, SaveLocalSettings, SaveNTPServer, SetChannelRoute, TestNTPServer } from '../wailsjs/go/main/App';
 import { EventsOn, WindowSetDarkTheme, WindowSetLightTheme, WindowSetSystemDefaultTheme } from '../wailsjs/runtime/runtime';
 import { STREAMING_CODE, language, locale, setLanguage, t, translateBackend, type LanguagePref, type ParamValue } from './i18n';
 
 type Theme = 'light' | 'dark' | 'system';
 type Settings = { bitrate: number; frameMs: number; theme: Theme; updatedAtMs: number; deviceId: string };
 type Device = { name: string; host: string; port: number; id: string; codec: string; sampleRate: number; channels: number; bitrate: number; frameMs: number; supportedFrameMs: number[]; updatedAtMs: number; settingsDeviceId: string };
-type DeviceStatus = { deviceId: string; name: string; connected: boolean; message: string; bitrate: number; frameMs: number; phase: number };
+type ChannelRoute = 'stereo' | 'left' | 'right';
+type DeviceStatus = { deviceId: string; name: string; connected: boolean; message: string; bitrate: number; frameMs: number; phase: number; channelRoute: ChannelRoute };
 type ConnRequest = { requestId: string; deviceId: string; name: string; host: string };
 type AuthorizedDevice = { ID: string; Name: string; AddedAtMs: number };
 type Calibration = { phase: number; offsetMs: number; rttMs: number; updatedAt: number };
@@ -68,7 +69,9 @@ function normalizeDevice(raw: any): Device {
   return { name: raw?.name ?? raw?.Name ?? 'Android device', host: raw?.host ?? raw?.Host ?? '', port: raw?.port ?? raw?.Port ?? 0, id: raw?.id ?? raw?.ID ?? raw?.Id ?? raw?.name ?? raw?.Name ?? '', codec: raw?.codec ?? raw?.Codec ?? '', sampleRate: raw?.sampleRate ?? raw?.SampleRate ?? 48000, channels: raw?.channels ?? raw?.Channels ?? 2, bitrate: raw?.bitrate ?? raw?.Bitrate ?? 128000, frameMs: raw?.frameMs ?? raw?.FrameMs ?? 10, supportedFrameMs: supportedFrameMs.length ? supportedFrameMs : [10], updatedAtMs: Number(raw?.updatedAtMs ?? raw?.UpdatedAtMs) || 0, settingsDeviceId: raw?.settingsDeviceId ?? raw?.SettingsDeviceID ?? '' };
 }
 function normalizeDeviceStatus(raw: any): DeviceStatus {
-  return { deviceId: String(raw?.deviceId ?? raw?.DeviceID ?? ''), name: String(raw?.name ?? raw?.Name ?? ''), connected: Boolean(raw?.connected ?? raw?.Connected), message: String(raw?.message ?? raw?.Message ?? ''), bitrate: Number(raw?.bitrate ?? raw?.Bitrate) || 0, frameMs: Number(raw?.frameMs ?? raw?.FrameMs) || 0, phase: Number(raw?.phase ?? raw?.Phase) || 0 };
+  const route = raw?.channelRoute ?? raw?.ChannelRoute ?? 'stereo';
+  const channelRoute: ChannelRoute = (route === 'left' || route === 'right') ? route : 'stereo';
+  return { deviceId: String(raw?.deviceId ?? raw?.DeviceID ?? ''), name: String(raw?.name ?? raw?.Name ?? ''), connected: Boolean(raw?.connected ?? raw?.Connected), message: String(raw?.message ?? raw?.Message ?? ''), bitrate: Number(raw?.bitrate ?? raw?.Bitrate) || 0, frameMs: Number(raw?.frameMs ?? raw?.FrameMs) || 0, phase: Number(raw?.phase ?? raw?.Phase) || 0, channelRoute };
 }
 // 旧版接收端不上报校准阶段：停留“检测”超过 6 秒视为已在正常播放。
 const nowTick = ref(Date.now());
@@ -154,6 +157,16 @@ async function connect(device: Device) {
 async function disconnect(device: Device) {
   try { await Disconnect(device.id); delete connected.value[device.id]; } catch { setStatus('status.disconnectFailed'); }
 }
+async function setChannelRoute(deviceId: string, route: ChannelRoute) {
+  // Optimistically update local state for immediate UI feedback.
+  const cur = connected.value[deviceId];
+  if (cur) connected.value[deviceId] = { ...cur, channelRoute: route };
+  try { await SetChannelRoute(deviceId, route); } catch (error) {
+    // Revert on failure.
+    if (cur) connected.value[deviceId] = cur;
+    setErrorStatus('status.connectFailed', error);
+  }
+}
 watch(settings, (next) => { localStorage.setItem(settingsKey, JSON.stringify(next)); applyTheme(next.theme); SaveLocalSettings(next.bitrate, next.frameMs).catch(() => {}); }, { deep: true });
 watch(page, (next) => { if (next === 'settings') { refreshAuthorized(); GetNTPSettings().then((value: any) => { ntpServer.value = String(value?.server ?? value?.Server ?? 'ntp.aliyun.com'); }).catch(() => {}); GetIdentity().then((value: any) => { identity.value = { deviceId: String(value?.deviceId ?? value?.DeviceID ?? ''), name: String(value?.name ?? value?.Name ?? '') }; }).catch(() => {}); } });
 watch(locale, () => { document.documentElement.lang = locale.value === 'zh' ? 'zh-CN' : 'en'; }, { immediate: true });
@@ -231,6 +244,26 @@ onUnmounted(() => { window.clearInterval(tickTimer); });
         </div>
       </Transition>
       <div v-if="devices.length" class="devices"><article v-for="device in devices" :key="device.id" :class="{ live: connected[device.id] }"><div class="speaker">S</div><div><h3>{{ device.name }}</h3><p>{{ device.host }}:{{ device.port }} · {{ t('device.supports', { frames: device.supportedFrameMs.join('/') }) }}<span v-if="deviceInfo(device)" :class="['live-info', { warn: deviceStalled(device) }]"> · {{ deviceInfo(device) }}</span></p>
+        <div v-if="connected[device.id]" class="channel-row">
+          <span class="channel-label">{{ t('channel.label') }}</span>
+          <div class="channel-group">
+            <button
+              type="button"
+              :class="['channel-btn', { active: (connected[device.id].channelRoute || 'stereo') === 'left' }]"
+              @click="setChannelRoute(device.id, 'left')"
+            >{{ t('channel.left') }}</button>
+            <button
+              type="button"
+              :class="['channel-btn', { active: (connected[device.id].channelRoute || 'stereo') === 'stereo' }]"
+              @click="setChannelRoute(device.id, 'stereo')"
+            >{{ t('channel.stereo') }}</button>
+            <button
+              type="button"
+              :class="['channel-btn', { active: (connected[device.id].channelRoute || 'stereo') === 'right' }]"
+              @click="setChannelRoute(device.id, 'right')"
+            >{{ t('channel.right') }}</button>
+          </div>
+        </div>
         <Transition name="fade">
           <div v-if="connected[device.id] && devicePhase(device) < 3" class="calib-row">
             <span class="wave" aria-hidden="true"><i v-for="n in 10" :key="n" :style="{ animationDelay: `${n * 80}ms` }"></i></span>
@@ -354,6 +387,13 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .calib-steps li.active { background: #086d4d; color: #fff; animation: phasepulse 1.2s ease-in-out infinite; }
 @keyframes phasepulse { 50% { box-shadow: 0 0 0 3px rgba(8, 109, 77, 0.18); } }
 .calib-hint { font-size: 11px; color: #687077; }
+.channel-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.channel-label { font-size: 12px; color: #687077; font-weight: 600; }
+.channel-group { display: inline-flex; border: 1px solid #d9dde1; border-radius: 4px; overflow: hidden; background: #fff; }
+.channel-btn { border: 0; background: transparent; color: #172033; padding: 4px 10px; font-size: 12px; font-weight: 500; cursor: pointer; border-radius: 0; transition: background 0.2s, color 0.2s; }
+.channel-btn:not(:last-child) { border-right: 1px solid #d9dde1; }
+.channel-btn.active { background: #086d4d; color: #fff; font-weight: 700; }
+.channel-btn:hover:not(.active) { background: #e8ecee; }
 .fold-enter-active, .fold-leave-active { transition: opacity 0.5s ease, transform 0.5s ease; }
 .fold-enter-from, .fold-leave-to { opacity: 0; transform: translateY(-6px); }
 .fade-enter-active, .fade-leave-active { transition: opacity 0.6s ease; }
@@ -383,6 +423,12 @@ button[disabled] { opacity: 0.6; cursor: default; }
 :root[data-theme='dark'] .calib-steps li { background: #242f34; color: #b6c1c7; }
 :root[data-theme='dark'] .calib-steps li.done { background: #1f3a2e; color: #4fc08d; }
 :root[data-theme='dark'] .calib-steps li.active { background: #086d4d; color: #eafff5; }
+:root[data-theme='dark'] .channel-label { color: #b6c1c7; }
+:root[data-theme='dark'] .channel-group { border-color: #3d4a51; background: #202b31; }
+:root[data-theme='dark'] .channel-btn { color: #e8edf0; }
+:root[data-theme='dark'] .channel-btn:not(:last-child) { border-right-color: #3d4a51; }
+:root[data-theme='dark'] .channel-btn.active { background: #086d4d; color: #fff; }
+:root[data-theme='dark'] .channel-btn:hover:not(.active) { background: #36434a; }
 @media (prefers-color-scheme: dark) {
   :root[data-theme='system'] .authorized-row { border-color: #3d4a51; background: #202b31; }
   :root[data-theme='system'] .text-input { background: #202b31; color: #e8edf0; border-color: #3d4a51; }
@@ -406,5 +452,12 @@ button[disabled] { opacity: 0.6; cursor: default; }
   :root[data-theme='system'] .calib-steps li { background: #242f34; color: #b6c1c7; }
   :root[data-theme='system'] .calib-steps li.done { background: #1f3a2e; color: #4fc08d; }
   :root[data-theme='system'] .calib-steps li.active { background: #086d4d; color: #eafff5; }
+  :root[data-theme='system'] .channel-label { color: #b6c1c7; }
+  :root[data-theme='system'] .channel-group { border-color: #3d4a51; background: #202b31; }
+  :root[data-theme='system'] .channel-btn { color: #e8edf0; }
+  :root[data-theme='system'] .channel-btn:not(:last-child) { border-right-color: #3d4a51; }
+  :root[data-theme='system'] .channel-btn.active { background: #086d4d; color: #fff; }
+  :root[data-theme='system'] .channel-btn:hover:not(.active) { background: #36434a; }
 }
 </style>
+

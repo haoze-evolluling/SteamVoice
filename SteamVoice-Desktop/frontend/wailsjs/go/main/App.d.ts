@@ -25,4 +25,6 @@ export function SaveLocalSettings(arg1:number,arg2:number):Promise<void>;
 
 export function SaveNTPServer(arg1:string):Promise<void>;
 
+export function SetChannelRoute(arg1:string,arg2:string):Promise<void>;
+
 export function TestNTPServer():Promise<main.NTPStatus>;
